@@ -60,6 +60,7 @@ filterwarnings = [
 markers = [
     "integration: marks tests as integration tests (may require external services)",
     "e2e: marks tests as end-to-end tests (require Docker)",
+    "benchmark: marks tests as performance benchmarks",
 ]
 
 [tool.ruff]

@@ -150,8 +150,9 @@ class TestGenerateBuilderConfig:
         assert "post_orchestration_scans" in result
         assert "service_id" in result
         assert "output_dir" in result
-        assert config_path.exists()
-        assert config_path.name == "config.yaml"
+        # config.yaml is no longer generated (depth passed via CLI flag);
+        # config_path is a placeholder path.
+        assert config_path is not None
 
     def test_depth_from_config(self, sample_config: SuperOrchestratorConfig, sample_state: PipelineState) -> None:
         """Depth should come from config.builder.depth."""
@@ -1081,31 +1082,20 @@ class TestParseBuilderResult:
         assert result.convergence_ratio == 0.8
 
     def test_parse_missing_state(self, tmp_path: Path) -> None:
-        """Returns failure result when STATE.json is missing.
-
-        Source bug: load_json returns None instead of raising FileNotFoundError,
-        and fallback BuilderResult missing system_id.  Patch load_json to
-        return None and verify the function surfaces an error (AttributeError).
-        """
-        # Source _parse_builder_result crashes (AttributeError) when load_json
-        # returns None.  Verify the crash is AttributeError.
-        with pytest.raises(AttributeError):
-            _parse_builder_result("my-svc", tmp_path)
+        """Returns failure result when STATE.json is missing."""
+        result = _parse_builder_result("my-svc", tmp_path)
+        assert result.success is False
+        assert "No STATE.json found" in result.error
 
     def test_parse_invalid_json(self, tmp_path: Path) -> None:
-        """Returns failure result when STATE.json is invalid.
-
-        Source bug: load_json returns None for invalid JSON, causing
-        AttributeError.  Verify the function surfaces the error.
-        """
+        """Returns failure result when STATE.json is invalid."""
         state_dir = tmp_path / ".agent-team"
         state_dir.mkdir()
         (state_dir / "STATE.json").write_text("not json", encoding="utf-8")
 
-        # Source _parse_builder_result crashes (AttributeError) when load_json
-        # returns None for invalid JSON.
-        with pytest.raises(AttributeError):
-            _parse_builder_result("my-svc", tmp_path)
+        result = _parse_builder_result("my-svc", tmp_path)
+        assert result.success is False
+        assert "STATE.json" in result.error
 
 
 class TestExecutePipeline:

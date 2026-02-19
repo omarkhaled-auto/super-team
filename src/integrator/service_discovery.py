@@ -33,22 +33,30 @@ class ServiceDiscovery:
         self.project_name = project_name
 
     async def _run_compose(self, *args: str) -> tuple[int, str, str]:
-        """Run a docker compose command."""
+        """Run a docker compose command.
+
+        Uses ``subprocess.run`` via ``asyncio.to_thread`` instead of
+        ``asyncio.create_subprocess_exec`` to avoid Windows-specific
+        ``CancelledError`` issues when MCP stdio sessions leave
+        dangling ``anyio`` cancel scopes in the event loop.
+        """
+        import subprocess
+
         cmd = ["docker", "compose"]
         for f in self.compose_files:
             cmd.extend(["-f", str(f)])
         cmd.extend(["-p", self.project_name, *args])
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
-        return (
-            proc.returncode or 0,
-            stdout.decode("utf-8", errors="replace"),
-            stderr.decode("utf-8", errors="replace"),
-        )
+
+        def _sync_run() -> tuple[int, str, str]:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                errors="replace",
+            )
+            return (result.returncode, result.stdout, result.stderr)
+
+        return await asyncio.to_thread(_sync_run)
 
     def get_service_ports(self) -> dict[str, int]:
         """Parse ``docker compose ps`` output to get mapped ports.

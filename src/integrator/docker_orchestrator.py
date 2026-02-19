@@ -42,32 +42,48 @@ class DockerOrchestrator:
             project_name=self.project_name,
         )
 
-    async def _run(self, *args: str) -> tuple[int, str, str]:
-        """Run a docker compose command and capture output.
+    def _run_sync(self, *args: str) -> tuple[int, str, str]:
+        """Run a docker compose command synchronously.
 
-        When multiple compose files are configured, each is passed
-        via ``-f`` in merge order so Docker Compose applies the
-        override chain correctly.
+        Uses ``subprocess.run`` directly instead of
+        ``asyncio.create_subprocess_exec`` to avoid Windows-specific
+        ``CancelledError`` issues when MCP stdio sessions leave
+        dangling ``anyio`` cancel scopes in the event loop.
 
         Returns:
             Tuple of (return_code, stdout, stderr).
         """
+        import subprocess
+
         cmd = ["docker", "compose"]
         for f in self.compose_files:
             cmd.extend(["-f", str(f)])
         cmd.extend(["-p", self.project_name, *args])
         logger.debug("Running: %s", " ".join(cmd))
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            errors="replace",
         )
-        stdout, stderr = await proc.communicate()
-        return (
-            proc.returncode or 0,
-            stdout.decode("utf-8", errors="replace"),
-            stderr.decode("utf-8", errors="replace"),
-        )
+        return (result.returncode, result.stdout, result.stderr)
+
+    async def _run(self, *args: str) -> tuple[int, str, str]:
+        """Async wrapper around :meth:`_run_sync`.
+
+        Delegates to ``loop.run_in_executor`` with a dedicated
+        ``ThreadPoolExecutor`` to ensure the synchronous subprocess
+        call runs outside the asyncio event loop and is not affected
+        by dangling ``anyio`` cancel scopes.
+        """
+        import concurrent.futures
+
+        loop = asyncio.get_running_loop()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return await loop.run_in_executor(
+                pool, lambda: self._run_sync(*args)
+            )
 
     async def start_services(self) -> dict[str, ServiceInfo]:
         """Start all services via ``docker compose up -d``.
