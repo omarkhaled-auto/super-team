@@ -9,26 +9,26 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from transitions import State
-from transitions.extensions.asyncio import AsyncMachine
+from transitions.extensions.asyncio import AsyncMachine, AsyncState
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# States -- exactly 11 (State objects with on_enter callbacks)
+# States -- exactly 11 (AsyncState objects for async state machine)
+# State transitions are handled by phase handlers in the pipeline loop
 # ---------------------------------------------------------------------------
-STATES: list[State] = [
-    State("init", on_enter=["on_enter_init"]),
-    State("architect_running", on_enter=["on_enter_architect_running"]),
-    State("architect_review", on_enter=["on_enter_architect_review"]),
-    State("contracts_registering", on_enter=["on_enter_contracts_registering"]),
-    State("builders_running", on_enter=["on_enter_builders_running"]),
-    State("builders_complete", on_enter=["on_enter_builders_complete"]),
-    State("integrating", on_enter=["on_enter_integrating"]),
-    State("quality_gate", on_enter=["on_enter_quality_gate"]),
-    State("fix_pass", on_enter=["on_enter_fix_pass"]),
-    State("complete", on_enter=["on_enter_complete"]),
-    State("failed", on_enter=["on_enter_failed"]),
+STATES: list[AsyncState] = [
+    AsyncState("init"),
+    AsyncState("architect_running"),
+    AsyncState("architect_review"),
+    AsyncState("contracts_registering"),
+    AsyncState("builders_running"),
+    AsyncState("builders_complete"),
+    AsyncState("integrating"),
+    AsyncState("quality_gate"),
+    AsyncState("fix_pass"),
+    AsyncState("complete"),
+    AsyncState("failed"),
 ]
 
 # ---------------------------------------------------------------------------

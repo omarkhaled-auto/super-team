@@ -1,0 +1,105 @@
+{
+  "entities": [
+    {
+      "name": "OrderItem",
+      "description": "| Field      | Type    | Constraints   |",
+      "owning_service": "TaskTracker PRD \u2014 Sample Application for Run 4 Verification",
+      "fields": [
+        {
+          "name": "product_id",
+          "type": "str",
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "quantity",
+          "type": "int",
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "price",
+          "type": "float",
+          "required": true,
+          "description": ""
+        }
+      ],
+      "state_machine": null
+    },
+    {
+      "name": "User",
+      "description": "| Field        | Type     | Constraints            |",
+      "owning_service": "TaskTracker PRD \u2014 Sample Application for Run 4 Verification",
+      "fields": [],
+      "state_machine": null
+    },
+    {
+      "name": "Order",
+      "description": "| Field      | Type     | Constraints          |",
+      "owning_service": "TaskTracker PRD \u2014 Sample Application for Run 4 Verification",
+      "fields": [],
+      "state_machine": null
+    },
+    {
+      "name": "EventsPublished",
+      "description": "| Event           | Channel          | Payload                                      |",
+      "owning_service": "TaskTracker PRD \u2014 Sample Application for Run 4 Verification",
+      "fields": [],
+      "state_machine": null
+    },
+    {
+      "name": "Notification",
+      "description": "| Field      | Type     | Constraints                     |",
+      "owning_service": "TaskTracker PRD \u2014 Sample Application for Run 4 Verification",
+      "fields": [],
+      "state_machine": null
+    },
+    {
+      "name": "EventSubscriptions",
+      "description": "| Event         | Action                                         |",
+      "owning_service": "TaskTracker PRD \u2014 Sample Application for Run 4 Verification",
+      "fields": [],
+      "state_machine": null
+    },
+    {
+      "name": "EventContract",
+      "description": "",
+      "owning_service": "TaskTracker PRD \u2014 Sample Application for Run 4 Verification",
+      "fields": [
+        {
+          "name": "publisher",
+          "type": "order",
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "subscriber",
+          "type": "notification",
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "transport",
+          "type": "Redis",
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "serialisation",
+          "type": "JSON",
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "channels",
+          "type": "order",
+          "required": true,
+          "description": ""
+        }
+      ],
+      "state_machine": null
+    }
+  ],
+  "relationships": [],
+  "generated_at": "2026-02-19T10:27:50.532193Z"
+}

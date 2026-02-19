@@ -1,21 +1,57 @@
 {
-  "pipeline_id": "a9e085c5-97d1-4e9d-a554-6c6d089ad0de",
-  "prd_path": "C:\\Users\\omars\\AppData\\Local\\Temp\\pytest-of-omars\\pytest-188\\test_new_pipeline_creates_stat0\\prd.md",
-  "config_path": "",
+  "pipeline_id": "94c7e2c4-71c1-4d33-92d9-0d82b07de339",
+  "prd_path": "tests\\run4\\fixtures\\sample_prd.md",
+  "config_path": "config.yaml",
   "depth": "thorough",
-  "current_state": "init",
+  "current_state": "builders_running",
   "previous_state": "",
-  "completed_phases": [],
-  "phase_artifacts": {},
+  "completed_phases": [
+    "architect",
+    "contract_registration",
+    "builders"
+  ],
+  "phase_artifacts": {
+    "architect": {
+      "service_map_path": ".super-orchestrator\\service_map.json",
+      "domain_model_path": ".super-orchestrator\\domain_model.json",
+      "contract_registry_path": ".super-orchestrator\\contracts"
+    },
+    "contract_registration": {
+      "registered_contracts": 1,
+      "registry_path": ".super-orchestrator\\contracts"
+    },
+    "builders": {
+      "total_builders": 1,
+      "successful_builders": 0,
+      "total_cost": 0.0
+    }
+  },
   "architect_retries": 0,
   "max_architect_retries": 2,
-  "service_map_path": "",
-  "contract_registry_path": "",
-  "domain_model_path": "",
-  "builder_statuses": {},
-  "builder_costs": {},
-  "builder_results": [],
-  "total_builders": 0,
+  "service_map_path": ".super-orchestrator\\service_map.json",
+  "contract_registry_path": ".super-orchestrator\\contracts",
+  "domain_model_path": ".super-orchestrator\\domain_model.json",
+  "builder_statuses": {
+    "task-tracker-prd-sample-application-for-run-4-verification": "failed"
+  },
+  "builder_costs": {
+    "task-tracker-prd-sample-application-for-run-4-verification": 0.0
+  },
+  "builder_results": {
+    "task-tracker-prd-sample-application-for-run-4-verification": {
+      "system_id": "task-tracker-prd-sample-application-for-run-4-verification",
+      "service_id": "task-tracker-prd-sample-application-for-run-4-verification",
+      "success": false,
+      "cost": 0.0,
+      "error": "No STATE.json found",
+      "output_dir": "",
+      "test_passed": 0,
+      "test_total": 0,
+      "convergence_ratio": 0.0,
+      "artifacts": []
+    }
+  },
+  "total_builders": 1,
   "successful_builders": 0,
   "services_deployed": [],
   "integration_report_path": "",
@@ -24,10 +60,14 @@
   "last_quality_results": {},
   "quality_report_path": "",
   "total_cost": 0.0,
-  "phase_costs": {},
+  "phase_costs": {
+    "architect": 0.0,
+    "contract_registration": 0.0,
+    "builders": 0.0
+  },
   "budget_limit": null,
-  "started_at": "2026-02-19T08:41:30.761441+00:00",
-  "updated_at": "2026-02-19T08:41:30.761441+00:00",
+  "started_at": "2026-02-19T10:27:48.910814+00:00",
+  "updated_at": "2026-02-19T10:27:55.718005+00:00",
   "interrupted": false,
   "interrupt_reason": "",
   "schema_version": 1

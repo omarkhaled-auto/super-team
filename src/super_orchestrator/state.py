@@ -33,7 +33,7 @@ class PipelineState:
     domain_model_path: str = ""
     builder_statuses: dict[str, str] = field(default_factory=dict)
     builder_costs: dict[str, float] = field(default_factory=dict)
-    builder_results: list[dict] = field(default_factory=list)
+    builder_results: dict[str, dict] = field(default_factory=dict)
     total_builders: int = 0
     successful_builders: int = 0
     services_deployed: list[str] = field(default_factory=list)

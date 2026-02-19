@@ -340,16 +340,16 @@ class SchemathesisRunner:
         base_url: str,
         max_examples: int = 50,
     ) -> list[ContractViolation]:
-        """Iterate every operation using the schemathesis programmatic API.
+        """Iterate every operation using the schemathesis 4.x programmatic API.
 
-        Uses ``schema.get_all_operations()`` to iterate operations, then
-        ``api_operation.make_case()`` to generate a test case,
-        ``case.call()`` to execute it, and ``case.validate_response()``
-        to check schema conformance.  Catches
-        ``schemathesis.failures.FailureGroup`` for SCHEMA-001 violations.
+        Uses ``schema.get_all_operations()`` which yields ``Result`` wrappers,
+        unwrapped via ``.ok()``.  Creates test cases with
+        ``api_operation.Case()``, executes via ``case.call()``, and validates
+        via ``case.validate_response()``.  Catches
+        ``schemathesis.core.failures.FailureGroup`` for SCHEMA-001 violations.
         """
         try:
-            from schemathesis.failures import FailureGroup
+            from schemathesis.core.failures import FailureGroup
         except ImportError:
             FailureGroup = Exception  # fallback
 
@@ -357,11 +357,20 @@ class SchemathesisRunner:
         examples_run = 0
 
         try:
-            for api_operation in schema.get_all_operations():
+            for result in schema.get_all_operations():
                 if examples_run >= max_examples:
                     break
+
+                # schemathesis 4.x wraps operations in Result objects
                 try:
-                    case = api_operation.make_case()
+                    api_operation = result.ok()
+                except AttributeError:
+                    # Fallback: result IS the operation (future-proofing)
+                    api_operation = result
+
+                try:
+                    # schemathesis 4.x: use api_operation.Case() instead of make_case()
+                    case = api_operation.Case()
                     endpoint = f"{case.method.upper()} {case.path}"
 
                     start = time.monotonic()
@@ -410,7 +419,7 @@ class SchemathesisRunner:
                     try:
                         case.validate_response(response)
                     except FailureGroup as fg:
-                        for failure in fg:
+                        for failure in fg.exceptions:
                             violations.append(
                                 ContractViolation(
                                     code=_CODE_SCHEMA,
@@ -423,9 +432,25 @@ class SchemathesisRunner:
                                 )
                             )
 
+                except FailureGroup as fg:
+                    # call_and_validate style failures
+                    for failure in fg.exceptions:
+                        violations.append(
+                            ContractViolation(
+                                code=_CODE_SCHEMA,
+                                severity="error",
+                                service=service_name,
+                                endpoint=str(getattr(api_operation, 'label', 'unknown')),
+                                message=str(failure),
+                                expected="Schema-compliant response",
+                                actual="validation failure",
+                            )
+                        )
                 except Exception as exc:
                     logger.debug(
-                        "Error testing operation: %s", exc,
+                        "Error testing operation %s: %s",
+                        getattr(api_operation, 'label', 'unknown'),
+                        exc,
                     )
         except Exception as exc:
             logger.warning(

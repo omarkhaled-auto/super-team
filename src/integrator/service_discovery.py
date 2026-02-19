@@ -13,24 +13,31 @@ logger = logging.getLogger(__name__)
 
 
 class ServiceDiscovery:
-    """Discovers and health-checks services running in Docker Compose."""
+    """Discovers and health-checks services running in Docker Compose.
+
+    Supports a single compose file path (backward compatible) or a list of
+    compose file paths for the 5-file merge strategy (TECH-004).
+    """
 
     def __init__(
         self,
-        compose_file: Path | str,
+        compose_file: Path | str | list[Path | str],
         project_name: str = "super-team",
     ) -> None:
-        self.compose_file = Path(compose_file)
+        if isinstance(compose_file, list):
+            self.compose_files: list[Path] = [Path(f) for f in compose_file]
+        else:
+            self.compose_files = [Path(compose_file)]
+        # Backward-compatible attribute: first file in the list
+        self.compose_file = self.compose_files[0]
         self.project_name = project_name
 
     async def _run_compose(self, *args: str) -> tuple[int, str, str]:
         """Run a docker compose command."""
-        cmd = [
-            "docker", "compose",
-            "-f", str(self.compose_file),
-            "-p", self.project_name,
-            *args,
-        ]
+        cmd = ["docker", "compose"]
+        for f in self.compose_files:
+            cmd.extend(["-f", str(f)])
+        cmd.extend(["-p", self.project_name, *args])
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -53,12 +60,10 @@ class ServiceDiscovery:
         """
         import subprocess
 
-        cmd = [
-            "docker", "compose",
-            "-f", str(self.compose_file),
-            "-p", self.project_name,
-            "ps", "--format", "{{.Service}}:{{.Ports}}",
-        ]
+        cmd = ["docker", "compose"]
+        for f in self.compose_files:
+            cmd.extend(["-f", str(f)])
+        cmd.extend(["-p", self.project_name, "ps", "--format", "{{.Service}}:{{.Ports}}"])
         try:
             completed = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=30,

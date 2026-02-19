@@ -78,11 +78,16 @@ from src.super_orchestrator.state_machine import (
 logger = logging.getLogger(__name__)
 
 # Keys to filter from subprocess environments to avoid leaking secrets.
-_FILTERED_ENV_KEYS = {"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "AWS_SECRET_ACCESS_KEY"}
+# NOTE: ANTHROPIC_API_KEY is intentionally NOT filtered because builder subprocesses need it
+_FILTERED_ENV_KEYS = {"AWS_SECRET_ACCESS_KEY"}
 
 
 def _filtered_env() -> dict[str, str]:
-    """Return a copy of ``os.environ`` with secret keys removed."""
+    """Return a copy of ``os.environ`` with secret keys removed.
+
+    Note: ANTHROPIC_API_KEY and OPENAI_API_KEY are intentionally passed through
+    because builder subprocesses (agent_team) need them to function.
+    """
     return {k: v for k, v in os.environ.items() if k not in _FILTERED_ENV_KEYS}
 
 
@@ -203,6 +208,9 @@ def generate_builder_config(
     output_dir = Path(config.output_dir) / service_info.service_id
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Store full metadata in builder_config.json for reference
+    # Don't generate config.yaml as agent_team doesn't need it
+    # (depth is passed via CLI flag)
     config_dict: dict[str, Any] = {
         "depth": config.builder.depth,
         "milestone": f"build-{service_info.service_id}",
@@ -215,12 +223,10 @@ def generate_builder_config(
         "output_dir": str(output_dir),
     }
 
-    # Write config.yaml compatible with Build 2's _dict_to_config()
-    config_path = output_dir / "config.yaml"
-    with open(config_path, "w", encoding="utf-8") as fh:
-        yaml.dump(config_dict, fh, default_flow_style=False, sort_keys=False)
+    # Return a dummy path for config - agent_team will use CLI args instead
+    config_path = output_dir / "config.yaml.not-used"
 
-    logger.info("Generated builder config: %s", config_path)
+    logger.info("Generated builder config metadata (stored in builder_config.json only)")
     return config_dict, config_path
 
 
@@ -469,12 +475,27 @@ async def run_contract_registration(
     stubs_file = registry_dir / "stubs.json"
     contract_stubs: dict[str, Any] = {}
     if stubs_file.exists():
-        contract_stubs = load_json(stubs_file)
+        loaded_stubs = load_json(stubs_file)
+        # Handle both dict and list formats
+        if isinstance(loaded_stubs, list):
+            # If it's a list, assume it contains one OpenAPI spec per service
+            # Map by service name extracted from the spec title or use index
+            for idx, stub in enumerate(loaded_stubs):
+                if isinstance(stub, dict):
+                    # Try to extract service name from OpenAPI spec
+                    info = stub.get("info", {})
+                    title = info.get("title", "").lower().replace(" api", "").strip()
+                    if title:
+                        contract_stubs[title] = stub
+                    # Also store by index for fallback
+                    contract_stubs[f"service_{idx}"] = stub
+        else:
+            contract_stubs = loaded_stubs
 
     services = service_map.get("services", [])
     registered = []
 
-    for svc in services:
+    for idx, svc in enumerate(services):
         if shutdown.should_stop:
             break
 
@@ -482,7 +503,21 @@ async def run_contract_registration(
         if not service_name:
             continue
 
-        spec = contract_stubs.get(service_name, svc.get("contract", {}))
+        # Try multiple ways to find the contract spec
+        spec = None
+        if isinstance(contract_stubs, dict):
+            # Try by service name (exact and normalized)
+            spec = contract_stubs.get(service_name)
+            if not spec:
+                normalized_name = service_name.lower().replace(" ", "-")
+                spec = contract_stubs.get(normalized_name)
+            if not spec:
+                # Try by index as fallback
+                spec = contract_stubs.get(f"service_{idx}")
+
+        # Fall back to contract field in service definition
+        if not spec:
+            spec = svc.get("contract", {})
         if not spec:
             logger.debug("No contract stub for service %s, skipping", service_name)
             continue
@@ -623,6 +658,7 @@ async def run_parallel_builders(
         async with semaphore:
             if shutdown.should_stop:
                 return BuilderResult(
+                    system_id=svc.service_id,  # Use service_id as system_id fallback
                     service_id=svc.service_id,
                     success=False,
                     error="Pipeline shutdown requested",
@@ -686,79 +722,149 @@ async def _run_single_builder(
     config_file = output_dir / "builder_config.json"
     atomic_write_json(config_file, builder_config)
 
-    # WIRE-016: Try create_execution_backend first (Build 2 in-process)
-    try:
-        from agent_team.execution import create_execution_backend  # type: ignore[import-untyped]
+    # Write the PRD file for the builder subprocess
+    prd_file = output_dir / "prd_input.md"
+    if not prd_file.exists():
+        # Read the original PRD
+        original_prd = Path(state.prd_path).read_text(encoding="utf-8")
+        prd_file.write_text(original_prd, encoding="utf-8")
 
-        backend = create_execution_backend(builder_dir=output_dir, config=builder_config)
-        result = await backend.run()
-        return _parse_builder_result(service_info.service_id, output_dir)
-    except ImportError:
-        logger.info(
-            "create_execution_backend not available for %s, falling back to subprocess",
-            service_info.service_id,
-        )
-    except Exception as exc:
-        logger.info(
-            "create_execution_backend failed for %s: %s -- falling back to subprocess",
-            service_info.service_id,
-            exc,
-        )
+    # WIRE-016: Try create_execution_backend first (in-process).
+    # Prefer agent_team_v15 (MCP-enhanced), fall back to agent_team (base).
+    for _exec_mod in ("agent_team_v15.execution", "agent_team.execution"):
+        try:
+            import importlib
 
-    # Subprocess fallback
-    proc = None
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "agent_team",
-            "--cwd",
-            str(output_dir),
-            "--depth",
-            config.builder.depth,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=_filtered_env(),
-        )
-        await asyncio.wait_for(
-            proc.wait(), timeout=config.builder.timeout
-        )
-    except asyncio.TimeoutError:
-        logger.warning(
-            "Builder for %s timed out after %ds",
-            service_info.service_id,
-            config.builder.timeout,
-        )
-        return BuilderResult(
-            service_id=service_info.service_id,
-            success=False,
-            error=f"Timed out after {config.builder.timeout}s",
-        )
-    except Exception as exc:
-        logger.error(
-            "Builder for %s failed with exception: %s",
-            service_info.service_id,
-            exc,
-        )
-        return BuilderResult(
-            service_id=service_info.service_id,
-            success=False,
-            error=str(exc),
-        )
-    finally:
-        if proc is not None and proc.returncode is None:
-            proc.kill()
-            await proc.wait()
-
-    # INT-003: Check if agent_team module was not found
-    if proc.returncode != 0 and proc.stderr:
-        stderr_text = (await proc.stderr.read()).decode(errors="replace")
-        if "ModuleNotFoundError" in stderr_text or "No module named" in stderr_text:
-            raise ConfigurationError(
-                f"Build 2 agent_team is not installed (ModuleNotFoundError). "
-                "Install Build 2 with `pip install agent-team` or ensure it is "
-                "on the Python path."
+            mod = importlib.import_module(_exec_mod)
+            create_execution_backend = mod.create_execution_backend  # type: ignore[attr-defined]
+            backend = create_execution_backend(builder_dir=output_dir, config=builder_config)
+            result = await backend.run()
+            return _parse_builder_result(service_info.service_id, output_dir)
+        except ImportError:
+            logger.info(
+                "%s not available for %s, trying next option",
+                _exec_mod,
+                service_info.service_id,
             )
+            continue
+        except Exception as exc:
+            logger.info(
+                "%s failed for %s: %s -- falling back to subprocess",
+                _exec_mod,
+                service_info.service_id,
+                exc,
+            )
+            break  # Don't try the next in-process module; go to subprocess.
+    else:
+        logger.info(
+            "No in-process execution backend available for %s, using subprocess",
+            service_info.service_id,
+        )
+
+    # Subprocess fallback -- prefer agent_team_v15, then agent_team.
+    builder_modules = ["agent_team_v15", "agent_team"]
+
+    for module_name in builder_modules:
+        proc = None
+        try:
+            # Use absolute paths and change cwd to output_dir to avoid config conflicts
+            cmd = [
+                sys.executable,
+                "-m",
+                module_name,
+                "--prd",
+                "prd_input.md",  # Relative to output_dir
+                "--depth",
+                config.builder.depth,
+                "--no-interview",
+            ]
+            logger.info(
+                "Launching builder subprocess for %s in %s: %s -m %s",
+                service_info.service_id,
+                output_dir,
+                sys.executable,
+                module_name,
+            )
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(output_dir),  # Set working directory for subprocess
+                env=_filtered_env(),
+            )
+            await asyncio.wait_for(
+                proc.wait(), timeout=config.builder.timeout_per_builder
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Builder for %s timed out after %ds",
+                service_info.service_id,
+                config.builder.timeout_per_builder,
+            )
+            return BuilderResult(
+                system_id=service_info.service_id,  # Use service_id as system_id fallback
+                service_id=service_info.service_id,
+                success=False,
+                error=f"Timed out after {config.builder.timeout_per_builder}s",
+            )
+        except Exception as exc:
+            logger.error(
+                "Builder for %s failed with exception: %s",
+                service_info.service_id,
+                exc,
+            )
+            return BuilderResult(
+                system_id=service_info.service_id,  # Use service_id as system_id fallback
+                service_id=service_info.service_id,
+                success=False,
+                error=str(exc),
+            )
+        finally:
+            if proc is not None and proc.returncode is None:
+                # Graceful shutdown: terminate first, then force-kill.
+                # On Windows proc.kill() can cascade; terminate() is gentler.
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+
+        # INT-003: Check if the module was not found -- try the next one.
+        # Also log stdout/stderr for debugging
+        if proc.returncode != 0:
+            stdout_text = ""
+            stderr_text = ""
+            if proc.stdout:
+                stdout_text = (await proc.stdout.read()).decode(errors="replace")
+            if proc.stderr:
+                stderr_text = (await proc.stderr.read()).decode(errors="replace")
+
+            if "ModuleNotFoundError" in stderr_text or "No module named" in stderr_text:
+                logger.info(
+                    "%s not installed, trying next builder module",
+                    module_name,
+                )
+                continue  # Try the next module in builder_modules.
+
+            # Log the error output for debugging
+            logger.warning(
+                "Builder subprocess %s exited with code %d. Stdout: %s... Stderr: %s...",
+                module_name,
+                proc.returncode,
+                stdout_text[:1000],
+                stderr_text[:1000],
+            )
+
+        # Module was found (even if the build itself failed) -- stop trying.
+        break
+    else:
+        # Neither agent_team_v15 nor agent_team is installed.
+        raise ConfigurationError(
+            "No builder module is installed (tried agent_team_v15, agent_team). "
+            "Install with `pip install agent-team-v15` or `pip install agent-team`, "
+            "or ensure the package is on the Python path."
+        )
 
     # Parse BuilderResult from STATE.json
     return _parse_builder_result(service_info.service_id, output_dir)
@@ -771,6 +877,8 @@ def _parse_builder_result(
     state_file = output_dir / ".agent-team" / "STATE.json"
     try:
         data = load_json(state_file)
+        if data is None:
+            raise FileNotFoundError("STATE.json is missing or invalid")
         summary = data.get("summary", {})
         return BuilderResult(
             system_id=str(data.get("system_id", "")),
@@ -786,6 +894,7 @@ def _parse_builder_result(
     except FileNotFoundError:
         logger.warning("No STATE.json found for builder %s", service_id)
         return BuilderResult(
+            system_id=service_id,  # Use service_id as system_id fallback
             service_id=service_id,
             success=False,
             error="No STATE.json found",
@@ -795,10 +904,159 @@ def _parse_builder_result(
             "Failed to parse STATE.json for builder %s: %s", service_id, exc
         )
         return BuilderResult(
+            system_id=service_id,  # Use service_id as system_id fallback
             service_id=service_id,
             success=False,
             error=f"Failed to parse STATE.json: {exc}",
         )
+
+
+async def _check_contract_breaking_changes(
+    state: PipelineState,
+    services: list[ServiceInfo],
+    service_urls: dict[str, str],
+) -> list[ContractViolation]:
+    """Check for breaking changes between registered and actual OpenAPI specs.
+
+    Attempts MCP-based detection first (via the bare ``check_breaking_changes``
+    function) and falls back to the direct ``detect_breaking_changes`` function
+    using the filesystem-stored contract specs.
+
+    This is a **best-effort** check: any failure is logged and silently
+    ignored so that the pipeline is never blocked by contract validation.
+
+    Returns a list of :class:`ContractViolation` for every breaking change
+    detected.
+    """
+    violations: list[ContractViolation] = []
+    registry_dir = Path(state.contract_registry_path) if state.contract_registry_path else None
+
+    if not registry_dir or not registry_dir.is_dir():
+        logger.info("No contract registry directory -- skipping breaking change check")
+        return violations
+
+    # Attempt to import the MCP client functions for the MCP-first path.
+    mcp_list_contracts = None
+    mcp_check_breaking = None
+    try:
+        from src.contract_engine.mcp_client import (  # type: ignore[import-untyped]
+            check_breaking_changes as _mcp_check,
+            list_contracts as _mcp_list,
+        )
+        mcp_list_contracts = _mcp_list
+        mcp_check_breaking = _mcp_check
+    except ImportError:
+        logger.info("Contract Engine MCP client not available -- will use direct detector")
+
+    # Import the direct (non-MCP) breaking change detector as fallback.
+    detect_fn = None
+    try:
+        from src.contract_engine.services.breaking_change_detector import (
+            detect_breaking_changes as _detect,
+        )
+        detect_fn = _detect
+    except ImportError:
+        logger.info("Breaking change detector not importable -- skipping breaking change check")
+        if mcp_list_contracts is None:
+            return violations
+
+    for svc in services:
+        try:
+            # --- Fetch the actual OpenAPI spec from the running service ------
+            import httpx  # lazy import
+
+            actual_url = f"{service_urls[svc.service_id]}/openapi.json"
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(actual_url, timeout=10)
+                if resp.status_code != 200:
+                    logger.debug(
+                        "Could not fetch OpenAPI spec from %s (status %d)",
+                        actual_url,
+                        resp.status_code,
+                    )
+                    continue
+                actual_spec: dict[str, Any] = resp.json()
+
+            # --- Path A: MCP-based check ------------------------------------
+            if mcp_list_contracts is not None and mcp_check_breaking is not None:
+                try:
+                    contracts_result = await mcp_list_contracts(
+                        service_name=svc.service_id,
+                    )
+                    items = contracts_result.get("items", [])
+                    if items:
+                        contract_id = items[0].get("id", "")
+                        if contract_id:
+                            changes = await mcp_check_breaking(
+                                contract_id=contract_id,
+                                new_spec=actual_spec,
+                            )
+                            for change in (changes or []):
+                                violations.append(
+                                    ContractViolation(
+                                        code="CONTRACT-BREAK-001",
+                                        severity=change.get("severity", "error"),
+                                        service=svc.service_id,
+                                        endpoint=change.get("path", ""),
+                                        message=change.get("change_type", "Breaking change detected"),
+                                    )
+                                )
+                            # MCP succeeded for this service; move to the next one.
+                            continue
+                except Exception as mcp_exc:
+                    logger.debug(
+                        "MCP breaking-change check failed for %s, falling back to direct: %s",
+                        svc.service_id,
+                        mcp_exc,
+                    )
+
+            # --- Path B: Direct filesystem-based comparison ------------------
+            if detect_fn is not None:
+                registered_spec_path = registry_dir / f"{svc.service_id}.json"
+                if not registered_spec_path.exists():
+                    logger.debug(
+                        "No registered spec file for %s at %s",
+                        svc.service_id,
+                        registered_spec_path,
+                    )
+                    continue
+
+                registered_spec = json.loads(
+                    registered_spec_path.read_text(encoding="utf-8")
+                )
+
+                changes = detect_fn(registered_spec, actual_spec)
+                for change in changes:
+                    # Only report error/warning severity breaking changes.
+                    if getattr(change, "severity", "info") in ("error", "warning"):
+                        violations.append(
+                            ContractViolation(
+                                code="CONTRACT-BREAK-001",
+                                severity=getattr(change, "severity", "error"),
+                                service=svc.service_id,
+                                endpoint=getattr(change, "path", ""),
+                                message=(
+                                    f"{getattr(change, 'change_type', 'breaking_change')}: "
+                                    f"{getattr(change, 'old_value', '')} -> "
+                                    f"{getattr(change, 'new_value', '')}"
+                                ),
+                            )
+                        )
+
+        except Exception as exc:
+            logger.debug(
+                "Breaking change check failed for %s: %s", svc.service_id, exc,
+            )
+
+    if violations:
+        logger.warning(
+            "Detected %d breaking change violation(s) across services",
+            len(violations),
+        )
+    else:
+        logger.info("No breaking change violations detected")
+
+    return violations
 
 
 async def run_integration_phase(
@@ -872,14 +1130,19 @@ async def run_integration_phase(
         state.save()
         return
 
-    # Step 1: Generate docker-compose
+    # Step 1: Generate 5-file compose merge (TECH-004)
     compose_gen = ComposeGenerator(
         traefik_image=config.integration.traefik_image
     )
-    compose_path = compose_gen.generate(services, output_dir)
+    compose_files = compose_gen.generate_compose_files(output_dir, services)
+    logger.info(
+        "Generated %d compose files for merge: %s",
+        len(compose_files),
+        [f.name for f in compose_files],
+    )
 
-    docker = DockerOrchestrator(compose_path)
-    discovery = ServiceDiscovery(compose_path)
+    docker = DockerOrchestrator(compose_files, project_name="super-team-run4")
+    discovery = ServiceDiscovery(compose_files, project_name="super-team-run4")
 
     try:
         # Step 2: Start services
@@ -937,8 +1200,23 @@ async def run_integration_phase(
         except Exception as bt_exc:
             logger.warning("Boundary tests failed: %s", bt_exc)
 
+        # Step 6c: Breaking change detection against registered contracts
+        breaking_violations: list[ContractViolation] = []
+        try:
+            breaking_violations = await _check_contract_breaking_changes(
+                state=state,
+                services=services,
+                service_urls=service_urls,
+            )
+        except Exception as bc_exc:
+            logger.warning("Breaking change detection failed: %s", bc_exc)
+
         # Combine into integration report
-        combined_violations = list(compliance_report.violations) + boundary_violations
+        combined_violations = (
+            list(compliance_report.violations)
+            + boundary_violations
+            + breaking_violations
+        )
         report = IntegrationReport(
             services_deployed=len(services),
             services_healthy=sum(
@@ -1151,7 +1429,9 @@ async def run_fix_pass(
     """Run the fix pass using :class:`ContractFixLoop`.
 
     Feeds violations to builders for each failing service and
-    increments ``state.quality_attempts``.
+    increments ``state.quality_attempts``.  Enhanced with priority
+    classification (P0-P3), violation snapshots, regression detection,
+    and convergence scoring from ``src.run4.fix_pass``.
     """
     logger.info("Starting fix pass (attempt %d)", state.quality_attempts + 1)
     cost_tracker.start_phase(PHASE_FIX_PASS)
@@ -1163,7 +1443,7 @@ async def run_fix_pass(
         cost_tracker.end_phase(total_fix_cost)
         return
 
-    # Lazy import
+    # Lazy imports -- ContractFixLoop for builder feeding
     try:
         from src.integrator.fix_loop import ContractFixLoop
     except ImportError as exc:
@@ -1171,7 +1451,25 @@ async def run_fix_pass(
             f"ContractFixLoop not available: {exc}"
         ) from exc
 
-    fix_loop = ContractFixLoop(timeout=config.builder.timeout)
+    # Lazy imports -- run4 fix_pass utilities for priority classification,
+    # snapshots, regression detection, and convergence checking
+    try:
+        from src.run4.fix_pass import (
+            classify_priority,
+            check_convergence,
+            compute_convergence,
+            detect_regressions,
+            take_violation_snapshot,
+        )
+        _has_run4_fix_pass = True
+    except ImportError:
+        logger.debug(
+            "src.run4.fix_pass not available -- skipping priority "
+            "classification and convergence tracking"
+        )
+        _has_run4_fix_pass = False
+
+    fix_loop = ContractFixLoop(timeout=config.builder.timeout_per_builder)
 
     # Extract violations from last quality results
     quality_results = state.last_quality_results
@@ -1193,13 +1491,46 @@ async def run_fix_pass(
                 )
             )
 
+    # ---- Step 1: Take pre-fix violation snapshot ----
+    snapshot_before: dict[str, list[str]] = {}
+    if _has_run4_fix_pass and all_violations:
+        violation_dicts = [
+            {
+                "scan_code": v.code,
+                "file_path": v.file_path or v.service or "",
+            }
+            for v in all_violations
+        ]
+        snapshot_before = take_violation_snapshot(violation_dicts)
+
+    # ---- Step 2: Classify each violation by priority (P0-P3) ----
+    priority_counts: dict[str, int] = {"P0": 0, "P1": 0, "P2": 0, "P3": 0}
+    if _has_run4_fix_pass:
+        for v in all_violations:
+            priority = classify_priority({
+                "severity": v.severity,
+                "category": v.code,
+                "message": v.message,
+            })
+            priority_counts[priority] = priority_counts.get(priority, 0) + 1
+
+        logger.info(
+            "Fix pass priority breakdown: P0=%d, P1=%d, P2=%d, P3=%d "
+            "(total violations=%d)",
+            priority_counts["P0"],
+            priority_counts["P1"],
+            priority_counts["P2"],
+            priority_counts["P3"],
+            len(all_violations),
+        )
+
     # Group violations by service
     violations_by_service: dict[str, list[ContractViolation]] = {}
     for v in all_violations:
         svc = v.service or "unknown"
         violations_by_service.setdefault(svc, []).append(v)
 
-    # Feed violations to builders
+    # Feed violations to builders (existing ContractFixLoop mechanism)
     for service_id, violations in violations_by_service.items():
         if shutdown.should_stop:
             break
@@ -1217,13 +1548,97 @@ async def run_fix_pass(
                 "Fix pass for service %s failed: %s", service_id, exc
             )
 
+    # ---- Step 3: Take post-fix violation snapshot & detect regressions ----
+    snapshot_after: dict[str, list[str]] = {}
+    regressions: list[dict] = []
+    if _has_run4_fix_pass and snapshot_before:
+        # Re-extract violations from quality results to build post-fix snapshot.
+        # Note: the actual post-fix scan happens in the next quality_gate pass;
+        # here we record the snapshot for comparison in subsequent iterations.
+        snapshot_after = take_violation_snapshot(
+            [
+                {
+                    "scan_code": v.code,
+                    "file_path": v.file_path or v.service or "",
+                }
+                for v in all_violations
+            ]
+        )
+        regressions = detect_regressions(snapshot_before, snapshot_after)
+        if regressions:
+            logger.warning(
+                "Fix pass detected %d regressions", len(regressions)
+            )
+
+    # ---- Step 4: Compute convergence score ----
+    convergence_score = 0.0
+    convergence_reason = ""
+    if _has_run4_fix_pass:
+        p0 = priority_counts["P0"]
+        p1 = priority_counts["P1"]
+        p2 = priority_counts["P2"]
+
+        # Compute initial weighted total for convergence formula.
+        # On the first fix attempt we use current counts as initial baseline;
+        # on subsequent attempts we pull the stored initial weights from
+        # phase_artifacts if available.
+        prev_artifacts = state.phase_artifacts.get(PHASE_FIX_PASS, {})
+        initial_total_weighted = prev_artifacts.get(
+            "initial_total_weighted",
+            p0 * 0.4 + p1 * 0.3 + p2 * 0.1,
+        )
+
+        convergence_score = compute_convergence(p0, p1, p2, initial_total_weighted)
+
+        convergence_result = check_convergence(
+            remaining_p0=p0,
+            remaining_p1=p1,
+            remaining_p2=p2,
+            initial_total_weighted=initial_total_weighted,
+            current_pass=state.quality_attempts + 1,
+            max_fix_passes=getattr(config.quality_gate, "max_fix_retries", 5),
+            budget_remaining=state.budget_limit - state.total_cost,
+        )
+        convergence_score = convergence_result.convergence_score
+        convergence_reason = convergence_result.reason
+
+        logger.info(
+            "Fix pass convergence: score=%.3f, should_stop=%s, reason=%s",
+            convergence_score,
+            convergence_result.should_stop,
+            convergence_reason,
+        )
+
     state.quality_attempts += 1
 
-    state.phase_artifacts[PHASE_FIX_PASS] = {
+    # ---- Step 5: Store enriched phase artifacts ----
+    phase_artifact: dict[str, Any] = {
         "attempt": state.quality_attempts,
         "services_fixed": len(violations_by_service),
         "total_cost": total_fix_cost,
     }
+    if _has_run4_fix_pass:
+        phase_artifact.update({
+            "p0_count": priority_counts["P0"],
+            "p1_count": priority_counts["P1"],
+            "p2_count": priority_counts["P2"],
+            "p3_count": priority_counts["P3"],
+            "total_violations": len(all_violations),
+            "convergence_score": convergence_score,
+            "convergence_reason": convergence_reason,
+            "regression_count": len(regressions),
+            "snapshot_before_codes": len(snapshot_before),
+            "snapshot_after_codes": len(snapshot_after),
+            # Preserve initial weighted total for subsequent fix passes
+            "initial_total_weighted": prev_artifacts.get(
+                "initial_total_weighted",
+                priority_counts["P0"] * 0.4
+                + priority_counts["P1"] * 0.3
+                + priority_counts["P2"] * 0.1,
+            ),
+        })
+
+    state.phase_artifacts[PHASE_FIX_PASS] = phase_artifact
 
     cost_tracker.end_phase(total_fix_cost)
     state.total_cost = cost_tracker.total_cost
@@ -1231,9 +1646,13 @@ async def run_fix_pass(
     state.save()
 
     logger.info(
-        "Fix pass complete -- attempt %d, cost=$%.4f",
+        "Fix pass complete -- attempt %d, cost=$%.4f, "
+        "P0=%d, P1=%d, convergence=%.3f",
         state.quality_attempts,
         total_fix_cost,
+        priority_counts.get("P0", 0),
+        priority_counts.get("P1", 0),
+        convergence_score,
     )
 
 
@@ -1488,6 +1907,60 @@ async def _phase_builders_complete(
     state.save()
 
 
+async def _index_generated_code(
+    state: PipelineState,
+    config: SuperOrchestratorConfig,
+) -> None:
+    """Re-index generated code in the Codebase Intelligence MCP.
+
+    Best-effort step executed after builders complete and before the
+    integration phase begins.  Walks each successful builder's output
+    directory for ``.py`` files and registers them via the CI MCP client.
+
+    If the CI MCP client cannot be imported or the server is unreachable,
+    the function logs a warning and returns silently -- it never blocks
+    the pipeline.
+    """
+    # Lazy import: keeps super_orchestrator importable without Build 1
+    try:
+        from src.codebase_intelligence.mcp_client import CodebaseIntelligenceClient
+    except ImportError:
+        logger.info(
+            "Codebase Intelligence MCP client not available -- skipping post-build indexing"
+        )
+        return
+
+    client = CodebaseIntelligenceClient()
+    indexed = 0
+    errors = 0
+
+    for service_id, status in state.builder_statuses.items():
+        if status != "healthy":
+            continue
+        output_dir = Path(config.output_dir) / service_id
+        if not output_dir.is_dir():
+            logger.debug(
+                "Builder output directory does not exist: %s", output_dir
+            )
+            continue
+        for py_file in output_dir.rglob("*.py"):
+            try:
+                await client.register_artifact(
+                    file_path=str(py_file),
+                    service_name=service_id,
+                )
+                indexed += 1
+            except Exception as exc:
+                errors += 1
+                logger.debug("Failed to index %s: %s", py_file, exc)
+
+    logger.info(
+        "Post-build indexing complete: %d files indexed, %d errors",
+        indexed,
+        errors,
+    )
+
+
 async def _phase_integration(
     state: PipelineState,
     config: SuperOrchestratorConfig,
@@ -1496,6 +1969,13 @@ async def _phase_integration(
     model: PipelineModel,
 ) -> None:
     """Handle builders_complete → integrating."""
+    # Re-index generated code so CI MCP tools work on builder output.
+    # Best-effort: failures are logged but never block integration.
+    try:
+        await _index_generated_code(state, config)
+    except Exception as exc:
+        logger.warning("Post-build indexing failed (non-fatal): %s", exc)
+
     state.save()
     await model.start_integration()  # type: ignore[attr-defined]
     state.current_state = model.state

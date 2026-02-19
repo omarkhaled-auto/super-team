@@ -1,0 +1,1063 @@
+[
+  {
+    "openapi": "3.1.0",
+    "info": {
+      "title": "task-tracker-prd-sample-application-for-run-4-verification API",
+      "version": "1.0.0",
+      "description": "All entities grouped into a single service (no contexts or relationships found)."
+    },
+    "paths": {
+      "/api/event-contracts": {
+        "get": {
+          "summary": "List all event-contracts",
+          "operationId": "list_event_contracts",
+          "responses": {
+            "200": {
+              "description": "A list of event-contracts.",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/EventContract"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "post": {
+          "summary": "Create a new EventContract",
+          "operationId": "create_event_contracts",
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventContract"
+                }
+              }
+            }
+          },
+          "responses": {
+            "201": {
+              "description": "The created EventContract.",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/EventContract"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/event-contracts/{id}": {
+        "get": {
+          "summary": "Get a EventContract by ID",
+          "operationId": "get_event_contracts_by_id",
+          "parameters": [
+            {
+              "name": "id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "The requested EventContract.",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/EventContract"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "put": {
+          "summary": "Update a EventContract",
+          "operationId": "update_event_contracts",
+          "parameters": [
+            {
+              "name": "id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventContract"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "The updated EventContract.",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/EventContract"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "delete": {
+          "summary": "Delete a EventContract",
+          "operationId": "delete_event_contracts",
+          "parameters": [
+            {
+              "name": "id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          ],
+          "responses": {
+            "204": {
+              "description": "No content."
+            }
+          }
+        }
+      },
+      "/api/event-subscriptions": {
+        "get": {
+          "summary": "List all event-subscriptions",
+          "operationId": "list_event_subscriptions",
+          "responses": {
+            "200": {
+              "description": "A list of event-subscriptions.",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/EventSubscriptions"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "post": {
+          "summary": "Create a new EventSubscriptions",
+          "operationId": "create_event_subscriptions",
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventSubscriptions"
+                }
+              }
+            }
+          },
+          "responses": {
+            "201": {
+              "description": "The created EventSubscriptions.",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/EventSubscriptions"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/event-subscriptions/{id}": {
+        "get": {
+          "summary": "Get a EventSubscriptions by ID",
+          "operationId": "get_event_subscriptions_by_id",
+          "parameters": [
+            {
+              "name": "id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "The requested EventSubscriptions.",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/EventSubscriptions"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "put": {
+          "summary": "Update a EventSubscriptions",
+          "operationId": "update_event_subscriptions",
+          "parameters": [
+            {
+              "name": "id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventSubscriptions"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "The updated EventSubscriptions.",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/EventSubscriptions"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "delete": {
+          "summary": "Delete a EventSubscriptions",
+          "operationId": "delete_event_subscriptions",
+          "parameters": [
+            {
+              "name": "id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          ],
+          "responses": {
+            "204": {
+              "description": "No content."
+            }
+          }
+        }
+      },
+      "/api/events-publisheds": {
+        "get": {
+          "summary": "List all events-publisheds",
+          "operationId": "list_events_publisheds",
+          "responses": {
+            "200": {
+              "description": "A list of events-publisheds.",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/EventsPublished"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "post": {
+          "summary": "Create a new EventsPublished",
+          "operationId": "create_events_publisheds",
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventsPublished"
+                }
+              }
+            }
+          },
+          "responses": {
+            "201": {
+              "description": "The created EventsPublished.",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/EventsPublished"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/events-publisheds/{id}": {
+        "get": {
+          "summary": "Get a EventsPublished by ID",
+          "operationId": "get_events_publisheds_by_id",
+          "parameters": [
+            {
+              "name": "id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "The requested EventsPublished.",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/EventsPublished"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "put": {
+          "summary": "Update a EventsPublished",
+          "operationId": "update_events_publisheds",
+          "parameters": [
+            {
+              "name": "id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventsPublished"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "The updated EventsPublished.",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/EventsPublished"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "delete": {
+          "summary": "Delete a EventsPublished",
+          "operationId": "delete_events_publisheds",
+          "parameters": [
+            {
+              "name": "id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          ],
+          "responses": {
+            "204": {
+              "description": "No content."
+            }
+          }
+        }
+      },
+      "/api/notifications": {
+        "get": {
+          "summary": "List all notifications",
+          "operationId": "list_notifications",
+          "responses": {
+            "200": {
+              "description": "A list of notifications.",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/Notification"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "post": {
+          "summary": "Create a new Notification",
+          "operationId": "create_notifications",
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Notification"
+                }
+              }
+            }
+          },
+          "responses": {
+            "201": {
+              "description": "The created Notification.",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Notification"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/notifications/{id}": {
+        "get": {
+          "summary": "Get a Notification by ID",
+          "operationId": "get_notifications_by_id",
+          "parameters": [
+            {
+              "name": "id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "The requested Notification.",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Notification"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "put": {
+          "summary": "Update a Notification",
+          "operationId": "update_notifications",
+          "parameters": [
+            {
+              "name": "id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Notification"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "The updated Notification.",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Notification"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "delete": {
+          "summary": "Delete a Notification",
+          "operationId": "delete_notifications",
+          "parameters": [
+            {
+              "name": "id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          ],
+          "responses": {
+            "204": {
+              "description": "No content."
+            }
+          }
+        }
+      },
+      "/api/orders": {
+        "get": {
+          "summary": "List all orders",
+          "operationId": "list_orders",
+          "responses": {
+            "200": {
+              "description": "A list of orders.",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/Order"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "post": {
+          "summary": "Create a new Order",
+          "operationId": "create_orders",
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Order"
+                }
+              }
+            }
+          },
+          "responses": {
+            "201": {
+              "description": "The created Order.",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Order"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/orders/{id}": {
+        "get": {
+          "summary": "Get a Order by ID",
+          "operationId": "get_orders_by_id",
+          "parameters": [
+            {
+              "name": "id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "The requested Order.",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Order"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "put": {
+          "summary": "Update a Order",
+          "operationId": "update_orders",
+          "parameters": [
+            {
+              "name": "id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Order"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "The updated Order.",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Order"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "delete": {
+          "summary": "Delete a Order",
+          "operationId": "delete_orders",
+          "parameters": [
+            {
+              "name": "id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          ],
+          "responses": {
+            "204": {
+              "description": "No content."
+            }
+          }
+        }
+      },
+      "/api/order-items": {
+        "get": {
+          "summary": "List all order-items",
+          "operationId": "list_order_items",
+          "responses": {
+            "200": {
+              "description": "A list of order-items.",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/OrderItem"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "post": {
+          "summary": "Create a new OrderItem",
+          "operationId": "create_order_items",
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderItem"
+                }
+              }
+            }
+          },
+          "responses": {
+            "201": {
+              "description": "The created OrderItem.",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/OrderItem"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/order-items/{id}": {
+        "get": {
+          "summary": "Get a OrderItem by ID",
+          "operationId": "get_order_items_by_id",
+          "parameters": [
+            {
+              "name": "id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "The requested OrderItem.",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/OrderItem"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "put": {
+          "summary": "Update a OrderItem",
+          "operationId": "update_order_items",
+          "parameters": [
+            {
+              "name": "id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderItem"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "The updated OrderItem.",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/OrderItem"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "delete": {
+          "summary": "Delete a OrderItem",
+          "operationId": "delete_order_items",
+          "parameters": [
+            {
+              "name": "id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          ],
+          "responses": {
+            "204": {
+              "description": "No content."
+            }
+          }
+        }
+      },
+      "/api/users": {
+        "get": {
+          "summary": "List all users",
+          "operationId": "list_users",
+          "responses": {
+            "200": {
+              "description": "A list of users.",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/User"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "post": {
+          "summary": "Create a new User",
+          "operationId": "create_users",
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              }
+            }
+          },
+          "responses": {
+            "201": {
+              "description": "The created User.",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/User"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/users/{id}": {
+        "get": {
+          "summary": "Get a User by ID",
+          "operationId": "get_users_by_id",
+          "parameters": [
+            {
+              "name": "id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "The requested User.",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/User"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "put": {
+          "summary": "Update a User",
+          "operationId": "update_users",
+          "parameters": [
+            {
+              "name": "id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "The updated User.",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/User"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "delete": {
+          "summary": "Delete a User",
+          "operationId": "delete_users",
+          "parameters": [
+            {
+              "name": "id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          ],
+          "responses": {
+            "204": {
+              "description": "No content."
+            }
+          }
+        }
+      }
+    },
+    "components": {
+      "schemas": {
+        "EventContract": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "publisher": {
+              "type": "string"
+            },
+            "subscriber": {
+              "type": "string"
+            },
+            "transport": {
+              "type": "string"
+            },
+            "serialisation": {
+              "type": "string"
+            },
+            "channels": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "publisher",
+            "subscriber",
+            "transport",
+            "serialisation",
+            "channels"
+          ]
+        },
+        "EventSubscriptions": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "id"
+          ]
+        },
+        "EventsPublished": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "id"
+          ]
+        },
+        "Notification": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "id"
+          ]
+        },
+        "Order": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "id"
+          ]
+        },
+        "OrderItem": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "product_id": {
+              "type": "string"
+            },
+            "quantity": {
+              "type": "integer"
+            },
+            "price": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "id",
+            "product_id",
+            "quantity",
+            "price"
+          ]
+        },
+        "User": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "id"
+          ]
+        }
+      }
+    }
+  }
+]

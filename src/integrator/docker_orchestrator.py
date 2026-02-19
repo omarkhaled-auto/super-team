@@ -19,32 +19,43 @@ logger = logging.getLogger(__name__)
 
 
 class DockerOrchestrator:
-    """Orchestrates Docker Compose services."""
+    """Orchestrates Docker Compose services.
+
+    Supports a single compose file path (backward compatible) or a list of
+    compose file paths for the 5-file merge strategy (TECH-004).
+    """
 
     def __init__(
         self,
-        compose_file: Path | str,
+        compose_file: Path | str | list[Path | str],
         project_name: str = "super-team",
     ) -> None:
-        self.compose_file = Path(compose_file)
+        if isinstance(compose_file, list):
+            self.compose_files: list[Path] = [Path(f) for f in compose_file]
+        else:
+            self.compose_files = [Path(compose_file)]
+        # Backward-compatible attribute: first file in the list
+        self.compose_file = self.compose_files[0]
         self.project_name = project_name
         self._discovery = ServiceDiscovery(
-            compose_file=self.compose_file,
+            compose_file=self.compose_files if len(self.compose_files) > 1 else self.compose_file,
             project_name=self.project_name,
         )
 
     async def _run(self, *args: str) -> tuple[int, str, str]:
         """Run a docker compose command and capture output.
 
+        When multiple compose files are configured, each is passed
+        via ``-f`` in merge order so Docker Compose applies the
+        override chain correctly.
+
         Returns:
             Tuple of (return_code, stdout, stderr).
         """
-        cmd = [
-            "docker", "compose",
-            "-f", str(self.compose_file),
-            "-p", self.project_name,
-            *args,
-        ]
+        cmd = ["docker", "compose"]
+        for f in self.compose_files:
+            cmd.extend(["-f", str(f)])
+        cmd.extend(["-p", self.project_name, *args])
         logger.debug("Running: %s", " ".join(cmd))
         proc = await asyncio.create_subprocess_exec(
             *cmd,
