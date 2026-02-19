@@ -1,0 +1,410 @@
+openapi: "3.1.0"
+info:
+  title: Order Service API
+  description: >
+    RESTful API for managing orders in the e-commerce platform.
+    Supports creating, retrieving, updating, and tracking orders.
+  version: "1.0.0"
+  contact:
+    name: Order Service Team
+    email: orders@example.com
+  license:
+    name: MIT
+    identifier: MIT
+
+servers:
+  - url: https://api.example.com/v1
+    description: Production server
+  - url: https://staging-api.example.com/v1
+    description: Staging server
+
+security:
+  - bearerAuth: []
+
+paths:
+  /orders:
+    get:
+      operationId: listOrders
+      summary: List orders
+      description: Retrieve a paginated list of orders, optionally filtered by status.
+      tags:
+        - Orders
+      parameters:
+        - name: page
+          in: query
+          description: Page number for pagination (1-based).
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          description: Number of items per page.
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: status
+          in: query
+          description: Filter orders by status.
+          required: false
+          schema:
+            type: string
+            enum:
+              - pending
+              - confirmed
+              - shipped
+              - delivered
+      responses:
+        "200":
+          description: A paginated list of orders.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Order"
+                  page:
+                    type: integer
+                  limit:
+                    type: integer
+                  total:
+                    type: integer
+                required:
+                  - items
+                  - page
+                  - limit
+                  - total
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    post:
+      operationId: createOrder
+      summary: Create a new order
+      description: Create a new order with the specified user and items.
+      tags:
+        - Orders
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrderCreate"
+      responses:
+        "201":
+          description: The newly created order.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /orders/{order_id}:
+    get:
+      operationId: getOrder
+      summary: Get a single order
+      description: Retrieve a single order by its unique identifier.
+      tags:
+        - Orders
+      parameters:
+        - $ref: "#/components/parameters/OrderId"
+      responses:
+        "200":
+          description: The requested order.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    put:
+      operationId: updateOrder
+      summary: Update an order
+      description: Update the status and/or items of an existing order.
+      tags:
+        - Orders
+      parameters:
+        - $ref: "#/components/parameters/OrderId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrderUpdate"
+      responses:
+        "200":
+          description: The updated order.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /orders/{order_id}/status:
+    put:
+      operationId: updateOrderStatus
+      summary: Update order status
+      description: Update only the status of an existing order.
+      tags:
+        - Orders
+      parameters:
+        - $ref: "#/components/parameters/OrderId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum:
+                    - pending
+                    - confirmed
+                    - shipped
+                    - delivered
+              required:
+                - status
+      responses:
+        "200":
+          description: The order with updated status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT-based authentication. Provide a valid Bearer token.
+
+  parameters:
+    OrderId:
+      name: order_id
+      in: path
+      required: true
+      description: Unique identifier of the order.
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique identifier of the user.
+        email:
+          type: string
+          format: email
+          description: Email address of the user.
+        name:
+          type: string
+          description: Full name of the user.
+        created_at:
+          type: string
+          format: date-time
+          description: Timestamp when the user was created.
+      required:
+        - id
+        - email
+        - name
+        - created_at
+
+    Order:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique identifier of the order.
+        user_id:
+          type: string
+          format: uuid
+          description: Identifier of the user who placed the order.
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrderItem"
+          description: List of items in the order.
+        status:
+          type: string
+          enum:
+            - pending
+            - confirmed
+            - shipped
+            - delivered
+          description: Current status of the order.
+        total_amount:
+          type: number
+          description: Total monetary amount for the order.
+        created_at:
+          type: string
+          format: date-time
+          description: Timestamp when the order was created.
+        updated_at:
+          type: string
+          format: date-time
+          description: Timestamp when the order was last updated.
+      required:
+        - id
+        - user_id
+        - items
+        - status
+        - total_amount
+        - created_at
+        - updated_at
+
+    OrderItem:
+      type: object
+      properties:
+        product_id:
+          type: string
+          description: Identifier of the product.
+        name:
+          type: string
+          description: Display name of the product.
+        quantity:
+          type: integer
+          minimum: 1
+          description: Number of units ordered.
+        price:
+          type: number
+          minimum: 0
+          description: Unit price of the product.
+      required:
+        - product_id
+        - name
+        - quantity
+        - price
+
+    OrderCreate:
+      type: object
+      properties:
+        user_id:
+          type: string
+          format: uuid
+          description: Identifier of the user placing the order.
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrderItem"
+          minItems: 1
+          description: List of items to include in the order.
+      required:
+        - user_id
+        - items
+
+    OrderUpdate:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - pending
+            - confirmed
+            - shipped
+            - delivered
+          description: New status for the order.
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrderItem"
+          description: Updated list of items for the order.
+
+    Error:
+      type: object
+      properties:
+        code:
+          type: integer
+          description: HTTP status code.
+        message:
+          type: string
+          description: Human-readable error message.
+        details:
+          type: string
+          description: Additional detail about the error.
+      required:
+        - code
+        - message
+
+  responses:
+    BadRequest:
+      description: Bad Request - The request was malformed or contained invalid parameters.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            code: 400
+            message: "Bad Request"
+            details: "The 'page' query parameter must be a positive integer."
+
+    NotFound:
+      description: Not Found - The requested resource does not exist.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            code: 404
+            message: "Not Found"
+            details: "Order with the specified ID was not found."
+
+    ValidationError:
+      description: Validation Error - The request body failed schema validation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            code: 422
+            message: "Validation Error"
+            details: "Field 'items' must contain at least one item."
+
+    InternalServerError:
+      description: Internal Server Error - An unexpected error occurred on the server.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            code: 500
+            message: "Internal Server Error"
+            details: "An unexpected error occurred. Please try again later."

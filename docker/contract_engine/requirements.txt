@@ -1,0 +1,12 @@
+fastapi==0.129.0
+uvicorn>=0.30.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+python-dotenv>=1.0.0
+httpx>=0.27.0
+starlette>=0.37.0
+openapi-spec-validator>=0.7.0
+prance>=25.0.0
+pyyaml>=6.0
+jsonschema>=4.20.0
+schemathesis==4.10.1

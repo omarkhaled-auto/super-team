@@ -1,0 +1,28 @@
+{
+  "mcpServers": {
+    "architect": {
+      "command": "python",
+      "args": ["-m", "src.architect.mcp_server"],
+      "env": {
+        "DATABASE_PATH": "./data/architect.db",
+        "CONTRACT_ENGINE_URL": "http://localhost:8002"
+      }
+    },
+    "contract-engine": {
+      "command": "python",
+      "args": ["-m", "src.contract_engine.mcp_server"],
+      "env": {
+        "DATABASE_PATH": "./data/contracts.db"
+      }
+    },
+    "codebase-intelligence": {
+      "command": "python",
+      "args": ["-m", "src.codebase_intelligence.mcp_server"],
+      "env": {
+        "DATABASE_PATH": "./data/symbols.db",
+        "CHROMA_PATH": "./data/chroma",
+        "GRAPH_PATH": "./data/graph.json"
+      }
+    }
+  }
+}

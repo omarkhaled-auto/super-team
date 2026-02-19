@@ -1,0 +1,85 @@
+version: "3.8"
+
+services:
+  architect:
+    build:
+      context: .
+      dockerfile: docker/architect/Dockerfile
+    ports:
+      - "8001:8000"
+    volumes:
+      - architect-data:/data
+    environment:
+      - DATABASE_PATH=/data/architect.db
+      - CONTRACT_ENGINE_URL=http://contract-engine:8000
+      - CODEBASE_INTEL_URL=http://codebase-intel:8000
+      - LOG_LEVEL=info
+    depends_on:
+      contract-engine:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - super-team-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  contract-engine:
+    build:
+      context: .
+      dockerfile: docker/contract_engine/Dockerfile
+    ports:
+      - "8002:8000"
+    volumes:
+      - contract-data:/data
+    environment:
+      - DATABASE_PATH=/data/contracts.db
+      - LOG_LEVEL=info
+    restart: unless-stopped
+    networks:
+      - super-team-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  codebase-intel:
+    build:
+      context: .
+      dockerfile: docker/codebase_intelligence/Dockerfile
+    ports:
+      - "8003:8000"
+    volumes:
+      - intel-data:/data
+    environment:
+      - DATABASE_PATH=/data/symbols.db
+      - CHROMA_PATH=/data/chroma
+      - GRAPH_PATH=/data/graph.json
+      - CONTRACT_ENGINE_URL=http://contract-engine:8000
+      - LOG_LEVEL=info
+    depends_on:
+      contract-engine:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - super-team-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  architect-data:
+  contract-data:
+  intel-data:
+
+networks:
+  super-team-net:
+    driver: bridge

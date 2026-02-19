@@ -1,0 +1,302 @@
+openapi: "3.1.0"
+info:
+  title: "User Service API"
+  version: "1.0.0"
+  description: >
+    A RESTful API for managing users. Supports creating, reading, updating,
+    and deleting user records with pagination for list endpoints.
+
+servers:
+  - url: http://localhost:8000
+    description: Local development server
+
+paths:
+  /api/users:
+    get:
+      summary: List users
+      description: Retrieve a paginated list of users.
+      operationId: listUsers
+      parameters:
+        - name: page
+          in: query
+          required: false
+          description: Page number (1-indexed).
+          schema:
+            type: integer
+            default: 1
+            minimum: 1
+        - name: page_size
+          in: query
+          required: false
+          description: Number of users per page.
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+      responses:
+        "200":
+          description: A paginated list of users.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserList"
+        "422":
+          description: Validation error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    post:
+      summary: Create user
+      description: Create a new user record.
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserCreate"
+      responses:
+        "201":
+          description: User created successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "422":
+          description: Validation error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/users/{user_id}:
+    get:
+      summary: Get user
+      description: Retrieve a single user by their ID.
+      operationId: getUser
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          description: The unique identifier of the user.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The requested user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    put:
+      summary: Update user
+      description: Update an existing user record.
+      operationId: updateUser
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          description: The unique identifier of the user.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserUpdate"
+      responses:
+        "200":
+          description: User updated successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Validation error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    delete:
+      summary: Delete user
+      description: Delete a user record by their ID.
+      operationId: deleteUser
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          description: The unique identifier of the user.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: User deleted successfully.
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  schemas:
+    User:
+      type: object
+      description: A user record.
+      required:
+        - id
+        - name
+        - email
+        - role
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique identifier for the user.
+        name:
+          type: string
+          description: Full name of the user.
+          examples:
+            - "Alice Johnson"
+        email:
+          type: string
+          format: email
+          description: Email address of the user.
+          examples:
+            - "alice@example.com"
+        role:
+          type: string
+          description: Role assigned to the user.
+          enum:
+            - admin
+            - editor
+            - viewer
+          examples:
+            - "editor"
+        created_at:
+          type: string
+          format: date-time
+          description: Timestamp when the user was created.
+        updated_at:
+          type: string
+          format: date-time
+          description: Timestamp when the user was last updated.
+
+    UserCreate:
+      type: object
+      description: Payload for creating a new user.
+      required:
+        - name
+        - email
+        - role
+      properties:
+        name:
+          type: string
+          description: Full name of the user.
+          examples:
+            - "Alice Johnson"
+        email:
+          type: string
+          format: email
+          description: Email address of the user.
+          examples:
+            - "alice@example.com"
+        role:
+          type: string
+          description: Role assigned to the user.
+          enum:
+            - admin
+            - editor
+            - viewer
+          examples:
+            - "editor"
+
+    UserUpdate:
+      type: object
+      description: Payload for updating an existing user. All fields are optional.
+      properties:
+        name:
+          type: string
+          description: Full name of the user.
+          examples:
+            - "Alice Johnson"
+        email:
+          type: string
+          format: email
+          description: Email address of the user.
+          examples:
+            - "alice@example.com"
+        role:
+          type: string
+          description: Role assigned to the user.
+          enum:
+            - admin
+            - editor
+            - viewer
+          examples:
+            - "editor"
+
+    UserList:
+      type: object
+      description: A paginated list of users.
+      required:
+        - items
+        - total
+        - page
+        - page_size
+      properties:
+        items:
+          type: array
+          description: The list of users on this page.
+          items:
+            $ref: "#/components/schemas/User"
+        total:
+          type: integer
+          description: Total number of users across all pages.
+          examples:
+            - 42
+        page:
+          type: integer
+          description: Current page number.
+          examples:
+            - 1
+        page_size:
+          type: integer
+          description: Number of users per page.
+          examples:
+            - 20
+
+    Error:
+      type: object
+      description: Error response body.
+      required:
+        - detail
+      properties:
+        detail:
+          type: string
+          description: A human-readable error message.
+          examples:
+            - "User not found."

@@ -1,0 +1,152 @@
+# =============================================================================
+# Tier 1 — Build 1: Foundation Services
+# =============================================================================
+# Architect (8001), Contract Engine (8002), and Codebase Intelligence (8003).
+# These form the core analysis and contract-management layer of Super Team.
+#
+# Prerequisites: Tier 0 infrastructure must be running.
+#
+# Usage (always include the infra tier):
+#   docker compose \
+#     -f docker/docker-compose.infra.yml \
+#     -f docker/docker-compose.build1.yml \
+#     up -d
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Contract Engine — API contract management and validation
+  # ---------------------------------------------------------------------------
+  # Starts first among application services because both architect and
+  # codebase-intelligence make cross-service calls to it.
+  contract-engine:
+    build:
+      context: ..
+      dockerfile: docker/contract_engine/Dockerfile
+    container_name: super-team-contract-engine
+    restart: unless-stopped
+    ports:
+      - "8002:8000"
+    volumes:
+      - contract-data:/data
+    environment:
+      - DATABASE_PATH=/data/contracts.db
+      - DATABASE_URL=postgresql://superteam:superteam_secret@postgres:5432/superteam
+      - REDIS_URL=redis://redis:6379/0
+      - LOG_LEVEL=info
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - frontend
+      - backend
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Architect — Service decomposition and domain modeling
+  # ---------------------------------------------------------------------------
+  architect:
+    build:
+      context: ..
+      dockerfile: docker/architect/Dockerfile
+    container_name: super-team-architect
+    restart: unless-stopped
+    ports:
+      - "8001:8000"
+    volumes:
+      - architect-data:/data
+    environment:
+      - DATABASE_PATH=/data/architect.db
+      - DATABASE_URL=postgresql://superteam:superteam_secret@postgres:5432/superteam
+      - REDIS_URL=redis://redis:6379/1
+      - CONTRACT_ENGINE_URL=http://contract-engine:8000
+      - CODEBASE_INTEL_URL=http://codebase-intel:8000
+      - LOG_LEVEL=info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      contract-engine:
+        condition: service_healthy
+    networks:
+      - frontend
+      - backend
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ---------------------------------------------------------------------------
+  # Codebase Intelligence — AST parsing, symbol extraction, semantic search
+  # ---------------------------------------------------------------------------
+  codebase-intel:
+    build:
+      context: ..
+      dockerfile: docker/codebase_intelligence/Dockerfile
+    container_name: super-team-codebase-intel
+    restart: unless-stopped
+    ports:
+      - "8003:8000"
+    volumes:
+      - intel-data:/data
+    environment:
+      - DATABASE_PATH=/data/symbols.db
+      - DATABASE_URL=postgresql://superteam:superteam_secret@postgres:5432/superteam
+      - REDIS_URL=redis://redis:6379/2
+      - CHROMA_PATH=/data/chroma
+      - GRAPH_PATH=/data/graph.json
+      - CONTRACT_ENGINE_URL=http://contract-engine:8000
+      - LOG_LEVEL=info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      contract-engine:
+        condition: service_healthy
+    networks:
+      - frontend
+      - backend
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  architect-data:
+    driver: local
+  contract-data:
+    driver: local
+  intel-data:
+    driver: local
+
+# =============================================================================
+# Networks — extends Tier 0 backend, adds frontend
+# =============================================================================
+networks:
+  frontend:
+    driver: bridge
+  backend:
+    external: true
+    name: docker_backend

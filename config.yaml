@@ -1,0 +1,70 @@
+# Super Orchestrator Configuration
+# All fields have sensible defaults -- only override what you need.
+
+# Architect phase configuration
+architect:
+  # Maximum retries for architect decomposition on timeout
+  max_retries: 2
+  # Timeout in seconds for architect phase
+  timeout: 900
+  # Auto-approve architecture without human review
+  auto_approve: false
+
+# Builder fleet configuration
+builder:
+  # Maximum concurrent builder processes
+  max_concurrent: 3
+  # Timeout per builder in seconds
+  timeout_per_builder: 1800
+  # Build depth: "quick", "standard", or "thorough"
+  depth: "thorough"
+
+# Integration testing configuration
+integration:
+  # Timeout for integration phase in seconds
+  timeout: 600
+  # Traefik image for API gateway
+  traefik_image: "traefik:v3.6"
+  # Docker compose file path
+  compose_file: "docker-compose.yml"
+  # Test compose file path
+  test_compose_file: "docker-compose.test.yml"
+
+# Quality gate configuration
+quality_gate:
+  # Maximum fix retries before giving up
+  max_fix_retries: 3
+  # Layer 3 scanner categories to run
+  layer3_scanners:
+    - security
+    - cors
+    - logging
+    - trace
+    - secrets
+    - docker
+    - health
+  # Enable Layer 4 adversarial scanning
+  layer4_enabled: true
+  # Minimum severity to block promotion
+  blocking_severity: "error"
+
+# Pipeline budget limit (null for unlimited)
+budget_limit: null
+
+# Pipeline execution depth
+depth: "standard"
+
+# Phase timeout overrides (seconds)
+phase_timeouts: {}
+
+# Build 1 services directory
+build1_services_dir: ""
+
+# Agent team config path
+agent_team_config_path: ""
+
+# Execution mode: "docker", "mcp", or "auto"
+mode: "auto"
+
+# Output directory for pipeline state
+output_dir: ".super-orchestrator"

@@ -1,0 +1,501 @@
+##############################################################################
+# E-Commerce Platform - Service Decomposition Map
+# Generated from: sample_prd.md
+# This file represents the expected output of the Architect Service's
+# decomposition of the PRD into a structured service map.
+##############################################################################
+
+project_name: "E-Commerce Platform"
+version: "2.0"
+generated_at: "2026-02-16T00:00:00Z"
+
+technology_defaults:
+  language: "Python 3.12+"
+  framework: "FastAPI"
+  database: "PostgreSQL 16"
+  cache: "Redis 7"
+  message_broker: "RabbitMQ 3.13"
+  containerization: "Docker + Kubernetes"
+  api_gateway: "Kong"
+
+services:
+  ##########################################################################
+  # User Service
+  ##########################################################################
+  - name: "User Service"
+    domain: "Identity & Access Management"
+    description: >
+      Manages user registration, authentication (OAuth2/JWT), profile
+      management, addresses, and role-based access control. Acts as the
+      authorization server issuing and validating tokens for all services.
+    stack:
+      language: "Python 3.12+"
+      framework: "FastAPI"
+      database: "PostgreSQL 16"
+      cache: "Redis 7"
+      additional:
+        - "bcrypt (password hashing)"
+        - "PyJWT (token handling)"
+    estimated_loc: 2500
+    owns_entities:
+      - name: "User"
+        fields:
+          - { name: "id", type: "UUID", constraints: "primary key" }
+          - { name: "email", type: "string", constraints: "unique, indexed, max 255" }
+          - { name: "password_hash", type: "string", constraints: "bcrypt, never exposed" }
+          - { name: "first_name", type: "string", constraints: "max 100" }
+          - { name: "last_name", type: "string", constraints: "max 100" }
+          - { name: "phone", type: "string", constraints: "optional, E.164" }
+          - { name: "role", type: "enum", constraints: "customer | admin | support" }
+          - { name: "account_status", type: "enum", constraints: "active | suspended | deactivated" }
+          - { name: "email_verified", type: "boolean", constraints: "default false" }
+          - { name: "created_at", type: "datetime", constraints: "UTC" }
+          - { name: "updated_at", type: "datetime", constraints: "UTC" }
+        state_machine:
+          name: "UserAccountStatus"
+          states:
+            - "active"
+            - "suspended"
+            - "deactivated"
+          transitions:
+            - { from: "active", to: "suspended", trigger: "admin_suspend" }
+            - { from: "active", to: "deactivated", trigger: "user_delete_request" }
+            - { from: "suspended", to: "active", trigger: "admin_reinstate" }
+            - { from: "suspended", to: "deactivated", trigger: "admin_deactivate" }
+          terminal_states:
+            - "deactivated"
+
+      - name: "Address"
+        fields:
+          - { name: "id", type: "UUID", constraints: "primary key" }
+          - { name: "user_id", type: "UUID", constraints: "foreign key to User" }
+          - { name: "label", type: "string", constraints: "home | work | other" }
+          - { name: "street_line_1", type: "string", constraints: "max 200" }
+          - { name: "street_line_2", type: "string", constraints: "optional, max 200" }
+          - { name: "city", type: "string", constraints: "max 100" }
+          - { name: "state", type: "string", constraints: "max 100" }
+          - { name: "postal_code", type: "string", constraints: "max 20" }
+          - { name: "country_code", type: "string", constraints: "ISO 3166-1 alpha-2" }
+          - { name: "is_default", type: "boolean", constraints: "default false" }
+
+    provides_contracts:
+      - endpoint: "POST /api/v1/auth/register"
+        description: "Register a new user"
+        auth_required: false
+      - endpoint: "POST /api/v1/auth/login"
+        description: "Authenticate and receive JWT tokens"
+        auth_required: false
+      - endpoint: "POST /api/v1/auth/refresh"
+        description: "Refresh access token using refresh token"
+        auth_required: true
+      - endpoint: "GET /api/v1/auth/verify"
+        description: "Verify a JWT token"
+        auth_required: true
+      - endpoint: "GET /api/v1/users/{user_id}"
+        description: "Get user profile"
+        auth_required: true
+      - endpoint: "PUT /api/v1/users/{user_id}"
+        description: "Update user profile"
+        auth_required: true
+      - endpoint: "GET /api/v1/users/{user_id}/addresses"
+        description: "List user addresses"
+        auth_required: true
+      - endpoint: "POST /api/v1/users/{user_id}/addresses"
+        description: "Add a new address"
+        auth_required: true
+
+    consumes_contracts: []
+
+    publishes_events:
+      - "user.registered"
+      - "user.updated"
+      - "user.deactivated"
+
+    consumes_events: []
+
+  ##########################################################################
+  # Product Service
+  ##########################################################################
+  - name: "Product Service"
+    domain: "Catalog & Inventory"
+    description: >
+      Manages the product catalog including categories, listings, pricing,
+      and inventory tracking. Provides full-text search via PostgreSQL
+      tsvector and caches hot product data in Redis with a 5-minute TTL.
+    stack:
+      language: "Python 3.12+"
+      framework: "FastAPI"
+      database: "PostgreSQL 16"
+      cache: "Redis 7"
+      additional:
+        - "PostgreSQL tsvector (full-text search)"
+    estimated_loc: 3000
+    owns_entities:
+      - name: "Product"
+        fields:
+          - { name: "id", type: "UUID", constraints: "primary key" }
+          - { name: "sku", type: "string", constraints: "unique, indexed, max 50" }
+          - { name: "name", type: "string", constraints: "max 255, not null" }
+          - { name: "slug", type: "string", constraints: "unique, indexed, max 255" }
+          - { name: "description", type: "text", constraints: "nullable" }
+          - { name: "price_cents", type: "integer", constraints: "not null, >= 0" }
+          - { name: "compare_at_price_cents", type: "integer", constraints: "nullable, >= 0" }
+          - { name: "currency", type: "string", constraints: "default USD, ISO 4217" }
+          - { name: "category_id", type: "UUID", constraints: "foreign key to Category" }
+          - { name: "brand", type: "string", constraints: "max 100, nullable" }
+          - { name: "weight_grams", type: "integer", constraints: "nullable, >= 0" }
+          - { name: "is_active", type: "boolean", constraints: "default true" }
+          - { name: "created_at", type: "datetime", constraints: "UTC" }
+          - { name: "updated_at", type: "datetime", constraints: "UTC" }
+
+      - name: "Category"
+        fields:
+          - { name: "id", type: "UUID", constraints: "primary key" }
+          - { name: "name", type: "string", constraints: "max 100, not null" }
+          - { name: "slug", type: "string", constraints: "unique, indexed" }
+          - { name: "parent_id", type: "UUID", constraints: "nullable, self-referential FK" }
+          - { name: "description", type: "text", constraints: "nullable" }
+          - { name: "sort_order", type: "integer", constraints: "default 0" }
+
+      - name: "Inventory"
+        fields:
+          - { name: "id", type: "UUID", constraints: "primary key" }
+          - { name: "product_id", type: "UUID", constraints: "foreign key to Product, unique" }
+          - { name: "quantity_on_hand", type: "integer", constraints: "not null, >= 0" }
+          - { name: "quantity_reserved", type: "integer", constraints: "not null, default 0, >= 0" }
+          - { name: "reorder_threshold", type: "integer", constraints: "default 10" }
+          - { name: "warehouse_location", type: "string", constraints: "max 50, nullable" }
+          - { name: "last_restocked_at", type: "datetime", constraints: "nullable" }
+
+    provides_contracts:
+      - endpoint: "GET /api/v1/products"
+        description: "List/search products with pagination and filters"
+        auth_required: false
+      - endpoint: "GET /api/v1/products/{product_id}"
+        description: "Get product details"
+        auth_required: false
+      - endpoint: "POST /api/v1/products"
+        description: "Create a new product (admin only)"
+        auth_required: true
+      - endpoint: "PUT /api/v1/products/{product_id}"
+        description: "Update a product (admin only)"
+        auth_required: true
+      - endpoint: "GET /api/v1/categories"
+        description: "List categories in tree structure"
+        auth_required: false
+      - endpoint: "GET /api/v1/products/{product_id}/inventory"
+        description: "Check stock level for a product"
+        auth_required: false
+
+    consumes_contracts:
+      - service: "User Service"
+        endpoint: "GET /api/v1/auth/verify"
+        purpose: "Validate admin tokens for write operations"
+
+    publishes_events:
+      - "product.created"
+      - "product.updated"
+      - "product.out_of_stock"
+      - "inventory.low_stock"
+
+    consumes_events:
+      - "order.confirmed"
+      - "order.cancelled"
+
+  ##########################################################################
+  # Order Service
+  ##########################################################################
+  - name: "Order Service"
+    domain: "Order Management"
+    description: >
+      Orchestrates the full purchase lifecycle from cart validation through
+      delivery. Reserves inventory, calculates totals, initiates payments,
+      and maintains a strict state machine for order status transitions.
+    stack:
+      language: "Python 3.12+"
+      framework: "FastAPI"
+      database: "PostgreSQL 16"
+      cache: "Redis 7"
+      additional:
+        - "JSONB (address snapshots)"
+    estimated_loc: 3500
+    owns_entities:
+      - name: "Order"
+        fields:
+          - { name: "id", type: "UUID", constraints: "primary key" }
+          - { name: "order_number", type: "string", constraints: "unique, indexed, auto-generated" }
+          - { name: "user_id", type: "UUID", constraints: "not null, indexed, references User Service" }
+          - { name: "status", type: "enum", constraints: "not null, default pending" }
+          - { name: "subtotal_cents", type: "integer", constraints: "not null, >= 0" }
+          - { name: "tax_cents", type: "integer", constraints: "not null, default 0, >= 0" }
+          - { name: "shipping_cents", type: "integer", constraints: "not null, default 0, >= 0" }
+          - { name: "total_cents", type: "integer", constraints: "not null, >= 0" }
+          - { name: "shipping_address_snapshot", type: "JSONB", constraints: "not null" }
+          - { name: "notes", type: "text", constraints: "nullable" }
+          - { name: "created_at", type: "datetime", constraints: "UTC" }
+          - { name: "updated_at", type: "datetime", constraints: "UTC" }
+        state_machine:
+          name: "OrderStatus"
+          states:
+            - "pending"
+            - "confirmed"
+            - "shipped"
+            - "delivered"
+            - "cancelled"
+          transitions:
+            - { from: "pending", to: "confirmed", trigger: "payment_captured" }
+            - { from: "pending", to: "cancelled", trigger: "customer_cancel_or_payment_failed" }
+            - { from: "confirmed", to: "shipped", trigger: "warehouse_ships" }
+            - { from: "confirmed", to: "cancelled", trigger: "admin_cancel_triggers_refund" }
+            - { from: "shipped", to: "delivered", trigger: "carrier_confirms_delivery" }
+            - { from: "shipped", to: "cancelled", trigger: "return_before_delivery" }
+          terminal_states:
+            - "delivered"
+            - "cancelled"
+
+      - name: "OrderItem"
+        fields:
+          - { name: "id", type: "UUID", constraints: "primary key" }
+          - { name: "order_id", type: "UUID", constraints: "foreign key to Order, indexed" }
+          - { name: "product_id", type: "UUID", constraints: "references Product Service, indexed" }
+          - { name: "product_name_snapshot", type: "string", constraints: "max 255" }
+          - { name: "sku_snapshot", type: "string", constraints: "max 50" }
+          - { name: "unit_price_cents", type: "integer", constraints: "not null, >= 0" }
+          - { name: "quantity", type: "integer", constraints: "not null, >= 1" }
+          - { name: "line_total_cents", type: "integer", constraints: "not null, computed" }
+
+    provides_contracts:
+      - endpoint: "POST /api/v1/orders"
+        description: "Place a new order"
+        auth_required: true
+      - endpoint: "GET /api/v1/orders/{order_id}"
+        description: "Get order details"
+        auth_required: true
+      - endpoint: "GET /api/v1/users/{user_id}/orders"
+        description: "List orders for a user"
+        auth_required: true
+      - endpoint: "PUT /api/v1/orders/{order_id}/status"
+        description: "Update order status (admin/system)"
+        auth_required: true
+      - endpoint: "POST /api/v1/orders/{order_id}/cancel"
+        description: "Cancel an order"
+        auth_required: true
+
+    consumes_contracts:
+      - service: "User Service"
+        endpoint: "GET /api/v1/users/{user_id}"
+        purpose: "Validate user exists and fetch shipping address"
+      - service: "User Service"
+        endpoint: "GET /api/v1/auth/verify"
+        purpose: "Validate authentication tokens"
+      - service: "Product Service"
+        endpoint: "GET /api/v1/products/{product_id}"
+        purpose: "Verify product availability and current pricing"
+      - service: "Product Service"
+        endpoint: "GET /api/v1/products/{product_id}/inventory"
+        purpose: "Check and reserve stock"
+      - service: "Payment Service"
+        endpoint: "POST /api/v1/payments"
+        purpose: "Initiate payment for an order"
+
+    publishes_events:
+      - "order.confirmed"
+      - "order.shipped"
+      - "order.delivered"
+      - "order.cancelled"
+
+    consumes_events:
+      - "payment.captured"
+      - "payment.failed"
+      - "user.deactivated"
+
+  ##########################################################################
+  # Payment Service
+  ##########################################################################
+  - name: "Payment Service"
+    domain: "Payment Processing"
+    description: >
+      Handles all monetary transactions including payment capture and
+      refund processing. Integrates with Stripe as the primary gateway
+      with an abstraction layer for adding additional providers.
+    stack:
+      language: "Python 3.12+"
+      framework: "FastAPI"
+      database: "PostgreSQL 16"
+      cache: "Redis 7"
+      additional:
+        - "stripe-python (payment gateway SDK)"
+    estimated_loc: 2000
+    owns_entities:
+      - name: "Payment"
+        fields:
+          - { name: "id", type: "UUID", constraints: "primary key" }
+          - { name: "order_id", type: "UUID", constraints: "not null, indexed" }
+          - { name: "user_id", type: "UUID", constraints: "not null, indexed" }
+          - { name: "amount_cents", type: "integer", constraints: "not null, > 0" }
+          - { name: "currency", type: "string", constraints: "default USD" }
+          - { name: "method", type: "enum", constraints: "credit_card | debit_card | wallet" }
+          - { name: "status", type: "enum", constraints: "pending | captured | failed | refunded" }
+          - { name: "gateway_transaction_id", type: "string", constraints: "nullable, indexed" }
+          - { name: "gateway_response", type: "JSONB", constraints: "nullable" }
+          - { name: "created_at", type: "datetime", constraints: "UTC" }
+          - { name: "captured_at", type: "datetime", constraints: "nullable" }
+
+      - name: "Refund"
+        fields:
+          - { name: "id", type: "UUID", constraints: "primary key" }
+          - { name: "payment_id", type: "UUID", constraints: "foreign key to Payment" }
+          - { name: "amount_cents", type: "integer", constraints: "not null, > 0" }
+          - { name: "reason", type: "string", constraints: "max 500" }
+          - { name: "status", type: "enum", constraints: "pending | processed | failed" }
+          - { name: "gateway_refund_id", type: "string", constraints: "nullable" }
+          - { name: "created_at", type: "datetime", constraints: "UTC" }
+          - { name: "processed_at", type: "datetime", constraints: "nullable" }
+
+    provides_contracts:
+      - endpoint: "POST /api/v1/payments"
+        description: "Initiate a payment"
+        auth_required: true
+      - endpoint: "GET /api/v1/payments/{payment_id}"
+        description: "Get payment status"
+        auth_required: true
+      - endpoint: "POST /api/v1/payments/{payment_id}/refund"
+        description: "Initiate a refund"
+        auth_required: true
+
+    consumes_contracts:
+      - service: "User Service"
+        endpoint: "GET /api/v1/auth/verify"
+        purpose: "Validate authentication tokens"
+
+    publishes_events:
+      - "payment.captured"
+      - "payment.failed"
+      - "refund.processed"
+
+    consumes_events:
+      - "order.confirmed"
+      - "order.cancelled"
+
+  ##########################################################################
+  # Notification Service
+  ##########################################################################
+  - name: "Notification Service"
+    domain: "Communication & Alerts"
+    description: >
+      Downstream consumer responsible for sending transactional emails, SMS,
+      and push notifications. Fully event-driven with no synchronous
+      dependencies on other services. Maintains an audit log of all
+      notifications for retry and compliance.
+    stack:
+      language: "Python 3.12+"
+      framework: "FastAPI"
+      database: "PostgreSQL 16"
+      cache: "Redis 7"
+      additional:
+        - "Jinja2 (email templates)"
+        - "SendGrid or AWS SES (email delivery)"
+        - "Twilio (SMS delivery)"
+    estimated_loc: 1500
+    owns_entities:
+      - name: "NotificationLog"
+        fields:
+          - { name: "id", type: "UUID", constraints: "primary key" }
+          - { name: "user_id", type: "UUID", constraints: "not null, indexed" }
+          - { name: "channel", type: "enum", constraints: "email | sms | push" }
+          - { name: "template_name", type: "string", constraints: "max 100" }
+          - { name: "recipient", type: "string", constraints: "max 255" }
+          - { name: "subject", type: "string", constraints: "max 255, nullable" }
+          - { name: "payload", type: "JSONB", constraints: "template variables" }
+          - { name: "status", type: "enum", constraints: "queued | sent | failed | bounced" }
+          - { name: "sent_at", type: "datetime", constraints: "nullable" }
+          - { name: "failure_reason", type: "text", constraints: "nullable" }
+          - { name: "retry_count", type: "integer", constraints: "default 0" }
+          - { name: "created_at", type: "datetime", constraints: "UTC" }
+
+    provides_contracts:
+      - endpoint: "GET /api/v1/notifications/{user_id}"
+        description: "List notification history for a user"
+        auth_required: true
+      - endpoint: "POST /api/v1/notifications/send"
+        description: "Manually trigger a notification (admin only)"
+        auth_required: true
+
+    consumes_contracts: []
+
+    publishes_events: []
+
+    consumes_events:
+      - "user.registered"
+      - "user.deactivated"
+      - "order.confirmed"
+      - "order.shipped"
+      - "order.delivered"
+      - "order.cancelled"
+      - "payment.failed"
+      - "refund.processed"
+
+##############################################################################
+# Cross-Service Relationships Summary
+##############################################################################
+cross_service_relationships:
+  - from: "Order Service"
+    to: "User Service"
+    type: "sync_api_call"
+    description: "Validates user and fetches shipping address at order creation"
+    reference_field: "Order.user_id -> User.id"
+
+  - from: "Order Service"
+    to: "Product Service"
+    type: "sync_api_call"
+    description: "Verifies product availability and snapshots pricing into OrderItems"
+    reference_field: "OrderItem.product_id -> Product.id"
+
+  - from: "Order Service"
+    to: "Payment Service"
+    type: "sync_api_call"
+    description: "Initiates payment capture during order confirmation"
+    reference_field: "Payment.order_id -> Order.id"
+
+  - from: "Product Service"
+    to: "Order Service"
+    type: "async_event"
+    description: "Consumes order.confirmed to decrement inventory, order.cancelled to release stock"
+
+  - from: "Payment Service"
+    to: "Order Service"
+    type: "async_event"
+    description: "Publishes payment.captured/failed events consumed by Order Service for state transitions"
+
+  - from: "Notification Service"
+    to: "All Services"
+    type: "async_event"
+    description: "Consumes domain events from all services to trigger transactional notifications"
+
+##############################################################################
+# State Machines Summary
+##############################################################################
+state_machines:
+  - name: "OrderStatus"
+    entity: "Order"
+    service: "Order Service"
+    states: ["pending", "confirmed", "shipped", "delivered", "cancelled"]
+    transitions:
+      - { from: "pending", to: "confirmed", trigger: "payment_captured" }
+      - { from: "pending", to: "cancelled", trigger: "customer_cancel_or_payment_failed" }
+      - { from: "confirmed", to: "shipped", trigger: "warehouse_ships" }
+      - { from: "confirmed", to: "cancelled", trigger: "admin_cancel_triggers_refund" }
+      - { from: "shipped", to: "delivered", trigger: "carrier_confirms_delivery" }
+      - { from: "shipped", to: "cancelled", trigger: "return_before_delivery" }
+    terminal_states: ["delivered", "cancelled"]
+
+  - name: "UserAccountStatus"
+    entity: "User"
+    service: "User Service"
+    states: ["active", "suspended", "deactivated"]
+    transitions:
+      - { from: "active", to: "suspended", trigger: "admin_suspend" }
+      - { from: "active", to: "deactivated", trigger: "user_delete_request" }
+      - { from: "suspended", to: "active", trigger: "admin_reinstate" }
+      - { from: "suspended", to: "deactivated", trigger: "admin_deactivate" }
+    terminal_states: ["deactivated"]

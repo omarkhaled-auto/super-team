@@ -1,0 +1,55 @@
+# =============================================================================
+# Tier 2: Traefik API Gateway
+# =============================================================================
+# Part of the 5-file compose merge architecture:
+#   Tier 0: docker-compose.infra.yml      (postgres, redis)
+#   Tier 1: docker-compose.build1.yml     (architect, contract-engine, codebase-intel)
+#   Tier 2: docker-compose.traefik.yml    (THIS FILE)
+#   Tier 3: docker-compose.generated.yml  (auth, order, notification services)
+#   Tier 4: docker-compose.run4.yml       (overrides, labels, debug logging)
+#
+# Traefik provides Docker-native reverse proxy with PathPrefix routing for
+# Build 1 services. Dashboard is disabled (SEC-002). Docker socket is
+# mounted read-only (SEC-003).
+# =============================================================================
+
+services:
+  traefik:
+    image: traefik:v3.6
+    command:
+      - "--api.dashboard=false"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+    ports:
+      - "80:80"
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - frontend
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+    mem_limit: 256m
+    restart: unless-stopped
+    depends_on:
+      architect:
+        condition: service_healthy
+      contract-engine:
+        condition: service_healthy
+      codebase-intelligence:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    labels:
+      - "traefik.enable=false"
+
+networks:
+  frontend:
+    external: true

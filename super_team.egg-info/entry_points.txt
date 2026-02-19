@@ -1,0 +1,2 @@
+[console_scripts]
+super-orchestrator = src.super_orchestrator.cli:app

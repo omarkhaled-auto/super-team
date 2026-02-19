@@ -1,0 +1,122 @@
+version: "3.8"
+
+services:
+  traefik:
+    image: traefik:v3.6
+    ports:
+      - "80:80"
+    command:
+      - "--api.dashboard=false"
+      - "--providers.docker"
+      - "--entrypoints.web.address=:80"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - frontend
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: orders
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - backend
+
+  auth-service:
+    build: ./services/auth-service
+    ports:
+      - "8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.auth-service.rule=PathPrefix(`/auth`)"
+      - "traefik.http.routers.auth-service.entrypoints=web"
+      - "traefik.http.services.auth-service.loadbalancer.server.port=8001"
+    environment:
+      SERVICE_ID: auth-service
+      PORT: "8001"
+      DATABASE_URL: postgresql://app:${POSTGRES_PASSWORD:-changeme}@postgres:5432/orders
+    networks:
+      - frontend
+      - backend
+
+  order-service:
+    build: ./services/order-service
+    ports:
+      - "8002:8002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8002/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.order-service.rule=PathPrefix(`/orders`)"
+      - "traefik.http.routers.order-service.entrypoints=web"
+      - "traefik.http.services.order-service.loadbalancer.server.port=8002"
+    environment:
+      SERVICE_ID: order-service
+      PORT: "8002"
+      DATABASE_URL: postgresql://app:${POSTGRES_PASSWORD:-changeme}@postgres:5432/orders
+    networks:
+      - frontend
+      - backend
+
+  notification-service:
+    build: ./services/notification-service
+    ports:
+      - "8003:8003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      order-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8003/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.notification-service.rule=PathPrefix(`/notifications`)"
+      - "traefik.http.routers.notification-service.entrypoints=web"
+      - "traefik.http.services.notification-service.loadbalancer.server.port=8003"
+    environment:
+      SERVICE_ID: notification-service
+      PORT: "8003"
+      ORDER_SERVICE_URL: http://order-service:8002
+    networks:
+      - frontend
+      - backend
+
+networks:
+  frontend:
+    driver: bridge
+  backend:
+    driver: bridge
+
+volumes:
+  pgdata:

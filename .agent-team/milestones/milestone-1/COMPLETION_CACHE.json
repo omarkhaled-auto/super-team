@@ -1,0 +1,16 @@
+{
+  "milestone_id": "milestone-1",
+  "title": "Test Infrastructure + Fixtures",
+  "exported_files": [
+    "src/run4/audit_report.py",
+    "src/run4/config.py",
+    "src/run4/scoring.py",
+    "src/run4/mcp_health.py",
+    "src/run4/fix_pass.py",
+    "src/run4/state.py",
+    "src/run4/__init__.py",
+    "src/run4/builder.py"
+  ],
+  "exported_symbols": [],
+  "summary_line": "Establish the test framework, sample app fixtures, mock MCP servers, Run4Config, Run4State persistence, and shared test "
+}

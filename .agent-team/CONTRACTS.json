@@ -1,0 +1,1142 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-02-19T03:00:00Z",
+  "run_id": "76714ffadce0",
+  "description": "Integration contracts for Super Team Run 4 — End-to-End Integration, Verification & Audit",
+  "systems": {
+    "build1": {
+      "name": "Foundation Services",
+      "components": ["Architect MCP", "Contract Engine MCP", "Codebase Intelligence MCP"]
+    },
+    "build2": {
+      "name": "Builder Fleet",
+      "components": ["agent-team v14.0", "ContractEngineClient", "CodebaseIntelligenceClient", "ArchitectClient"]
+    },
+    "build3": {
+      "name": "Orchestration Layer",
+      "components": ["Super Orchestrator", "Integrator", "Quality Gate", "CLI"]
+    }
+  },
+  "milestones": [
+    {
+      "id": "milestone-1",
+      "name": "Test Infrastructure + Fixtures",
+      "status": "COMPLETE",
+      "dependencies": [],
+      "gate_condition": "All TEST-001 through TEST-007 pass"
+    },
+    {
+      "id": "milestone-2",
+      "name": "Build 1 to Build 2 MCP Wiring Verification",
+      "status": "COMPLETE",
+      "dependencies": ["milestone-1"],
+      "gate_condition": "All REQ-009 through REQ-015, WIRE-001 through WIRE-012, and TEST-008 pass"
+    },
+    {
+      "id": "milestone-3",
+      "name": "Build 2 to Build 3 Wiring Verification",
+      "status": "FAILED",
+      "dependencies": ["milestone-1"],
+      "gate_condition": "All REQ-016 through REQ-020, WIRE-013 through WIRE-016, WIRE-021, TEST-009, TEST-010 pass"
+    },
+    {
+      "id": "milestone-4",
+      "name": "End-to-End Pipeline Test",
+      "status": "PENDING",
+      "dependencies": ["milestone-2", "milestone-3"],
+      "gate_condition": "All REQ-021 through REQ-028, WIRE-017 through WIRE-020, TECH-004 through TECH-006, SEC-001 through SEC-003, TEST-011, TEST-012 pass"
+    },
+    {
+      "id": "milestone-5",
+      "name": "Fix Pass + Defect Remediation",
+      "status": "PENDING",
+      "dependencies": ["milestone-4"],
+      "gate_condition": "All REQ-029 through REQ-033, TECH-007, TECH-008, TEST-013 through TEST-015 pass and fix loop converges"
+    },
+    {
+      "id": "milestone-6",
+      "name": "Audit Report + Final Verification",
+      "status": "PENDING",
+      "dependencies": ["milestone-5"],
+      "gate_condition": "All TEST-016 through TEST-018 pass, SUPER_TEAM_AUDIT_REPORT.md generated with all 7 sections and 4 appendices"
+    }
+  ],
+  "module_contracts": {
+    "src.run4": {
+      "exports": [
+        {
+          "name": "__version__",
+          "type": "str",
+          "value": "1.0.0",
+          "milestone": "milestone-1"
+        }
+      ]
+    },
+    "src.run4.config": {
+      "exports": [
+        {
+          "name": "Run4Config",
+          "type": "dataclass",
+          "milestone": "milestone-1",
+          "fields": {
+            "build1_project_root": "Path",
+            "build2_project_root": "Path",
+            "build3_project_root": "Path",
+            "output_dir": "str (default: '.run4')",
+            "compose_project_name": "str (default: 'super-team-run4')",
+            "docker_compose_files": "list[str]",
+            "health_check_timeout_s": "int (default: 120)",
+            "health_check_interval_s": "float (default: 3.0)",
+            "mcp_startup_timeout_ms": "int (default: 30000)",
+            "mcp_tool_timeout_ms": "int (default: 60000)",
+            "mcp_first_start_timeout_ms": "int (default: 120000)",
+            "max_concurrent_builders": "int (default: 3)",
+            "builder_timeout_s": "int (default: 1800)",
+            "builder_depth": "str (default: 'thorough')",
+            "max_fix_passes": "int (default: 5)",
+            "fix_effectiveness_floor": "float (default: 0.30)",
+            "regression_rate_ceiling": "float (default: 0.25)",
+            "max_budget_usd": "float (default: 100.0)",
+            "sample_prd_path": "str (default: 'tests/run4/fixtures/sample_prd.md')"
+          },
+          "validation": "__post_init__ validates all Path fields exist, converts strings to Path, raises ValueError",
+          "requirements": ["REQ-001", "TECH-001"]
+        },
+        {
+          "name": "Run4Config.from_yaml",
+          "type": "classmethod",
+          "signature": "(path: str) -> Run4Config",
+          "milestone": "milestone-1",
+          "requirements": ["TECH-001"]
+        }
+      ]
+    },
+    "src.run4.state": {
+      "exports": [
+        {
+          "name": "Finding",
+          "type": "dataclass",
+          "milestone": "milestone-1",
+          "fields": {
+            "finding_id": "str (pattern: FINDING-NNN)",
+            "priority": "str (enum: P0, P1, P2, P3)",
+            "system": "str (enum: Build 1, Build 2, Build 3, Integration)",
+            "component": "str",
+            "evidence": "str",
+            "recommendation": "str",
+            "resolution": "str (enum: FIXED, OPEN, WONTFIX, default: OPEN)",
+            "fix_pass_number": "int (default: 0)",
+            "fix_verification": "str",
+            "created_at": "str (ISO 8601 UTC, auto-generated)"
+          },
+          "requirements": ["REQ-002", "REQ-003", "REQ-029"]
+        },
+        {
+          "name": "Run4State",
+          "type": "dataclass",
+          "milestone": "milestone-1",
+          "fields": {
+            "schema_version": "int (default: 1)",
+            "run_id": "str (uuid4[:12])",
+            "current_phase": "str (enum: init, health_check, builders, contracts, fix_pass, scoring)",
+            "completed_phases": "list[str]",
+            "mcp_health": "dict[str, dict]",
+            "builder_results": "dict[str, dict]",
+            "findings": "list[Finding]",
+            "fix_passes": "list[dict]",
+            "scores": "dict[str, float]",
+            "aggregate_score": "float (default: 0.0)",
+            "traffic_light": "str (enum: RED, YELLOW, GREEN, default: RED)",
+            "total_cost": "float (default: 0.0)",
+            "phase_costs": "dict[str, float]",
+            "started_at": "str (ISO 8601 UTC)",
+            "updated_at": "str (ISO 8601 UTC)"
+          },
+          "requirements": ["REQ-002", "REQ-003", "TECH-002"]
+        },
+        {
+          "name": "Run4State.save",
+          "type": "method",
+          "signature": "(path: Path) -> None",
+          "description": "Atomic write via tmp + os.replace, creates parent dirs",
+          "milestone": "milestone-1"
+        },
+        {
+          "name": "Run4State.load",
+          "type": "classmethod",
+          "signature": "(path: Path) -> Run4State | None",
+          "description": "Returns None for missing/corrupted files or schema_version != 1",
+          "milestone": "milestone-1"
+        },
+        {
+          "name": "Run4State.add_finding",
+          "type": "method",
+          "signature": "(finding: Finding) -> None",
+          "description": "Append finding, auto-assigns finding_id if empty",
+          "milestone": "milestone-1"
+        },
+        {
+          "name": "Run4State.next_finding_id",
+          "type": "method",
+          "signature": "() -> str",
+          "description": "Returns FINDING-NNN with auto-increment from max existing id",
+          "milestone": "milestone-1"
+        }
+      ]
+    },
+    "src.run4.mcp_health": {
+      "exports": [
+        {
+          "name": "poll_until_healthy",
+          "type": "async function",
+          "signature": "(service_urls: dict[str, str], timeout_s: float = 120, interval_s: float = 3.0, required_consecutive: int = 2) -> dict[str, dict]",
+          "return_schema": {
+            "per_service": {
+              "status": "str (healthy|unhealthy|error)",
+              "response_time_ms": "float",
+              "consecutive_ok": "int",
+              "http_status": "int (optional)",
+              "error": "str (optional)"
+            }
+          },
+          "milestone": "milestone-1",
+          "requirements": ["INT-004", "INT-005"]
+        },
+        {
+          "name": "check_mcp_health",
+          "type": "async function",
+          "signature": "(server_params: Any, timeout: float = 30.0) -> dict",
+          "return_schema": {
+            "status": "str (healthy|unhealthy)",
+            "tools_count": "int",
+            "tool_names": "list[str]",
+            "error": "str | None"
+          },
+          "milestone": "milestone-1",
+          "requirements": ["INT-004", "INT-005"]
+        }
+      ]
+    },
+    "src.run4.builder": {
+      "exports": [
+        {
+          "name": "parse_builder_state",
+          "type": "function",
+          "signature": "(output_dir: Path) -> dict",
+          "return_schema": {
+            "success": "bool",
+            "test_passed": "int",
+            "test_total": "int",
+            "convergence_ratio": "float"
+          },
+          "milestone": "milestone-1",
+          "expanded_in": "milestone-3",
+          "requirements": ["INT-006"]
+        },
+        {
+          "name": "BuilderResult",
+          "type": "dataclass",
+          "milestone": "milestone-3",
+          "fields": {
+            "service_name": "str",
+            "success": "bool",
+            "test_passed": "int",
+            "test_total": "int",
+            "convergence_ratio": "float",
+            "total_cost": "float",
+            "health": "str",
+            "completed_phases": "list[str]",
+            "exit_code": "int",
+            "stdout": "str",
+            "stderr": "str",
+            "duration_s": "float"
+          },
+          "requirements": ["REQ-016", "REQ-017"]
+        },
+        {
+          "name": "invoke_builder",
+          "type": "async function",
+          "signature": "(cwd: Path, depth: str = 'thorough', timeout_s: int = 1800, env: dict | None = None) -> BuilderResult",
+          "description": "Invoke python -m agent_team --cwd {cwd} --depth {depth} via asyncio.create_subprocess_exec",
+          "milestone": "milestone-3",
+          "requirements": ["REQ-016"]
+        },
+        {
+          "name": "run_parallel_builders",
+          "type": "async function",
+          "signature": "(builder_configs: list[dict], max_concurrent: int = 3, timeout_s: int = 1800) -> list[BuilderResult]",
+          "description": "Launch builders with asyncio.Semaphore(max_concurrent), each to own directory",
+          "milestone": "milestone-3",
+          "requirements": ["REQ-019"]
+        },
+        {
+          "name": "generate_builder_config",
+          "type": "function",
+          "signature": "(service_name: str, output_dir: Path, depth: str = 'thorough', contracts: list[dict] | None = None, mcp_enabled: bool = True) -> Path",
+          "description": "Generate config.yaml compatible with Build 2's _dict_to_config()",
+          "milestone": "milestone-3",
+          "requirements": ["REQ-018", "SVC-020"]
+        },
+        {
+          "name": "feed_violations_to_builder",
+          "type": "async function",
+          "signature": "(cwd: Path, violations: list[dict], timeout_s: int = 600) -> BuilderResult",
+          "description": "Write FIX_INSTRUCTIONS.md to cwd, invoke builder in quick mode",
+          "milestone": "milestone-3",
+          "requirements": ["REQ-020", "SVC-019"]
+        },
+        {
+          "name": "write_fix_instructions",
+          "type": "function",
+          "signature": "(cwd: Path, violations: list[dict], priority_order: list[str] = ['P0', 'P1', 'P2']) -> Path",
+          "description": "Generate FIX_INSTRUCTIONS.md with categorized violations",
+          "milestone": "milestone-3"
+        }
+      ]
+    },
+    "src.run4.fix_pass": {
+      "exports": [
+        {
+          "name": "detect_regressions",
+          "type": "function",
+          "signature": "(before: dict[str, list[str]], after: dict[str, list[str]]) -> list[dict]",
+          "return_schema": {
+            "items": {
+              "category": "str",
+              "violation": "str"
+            }
+          },
+          "milestone": "milestone-1",
+          "expanded_in": "milestone-5",
+          "requirements": ["INT-007"]
+        },
+        {
+          "name": "classify_priority",
+          "type": "function",
+          "signature": "(finding: dict) -> str",
+          "description": "Apply P0-P3 decision tree based on severity",
+          "milestone": "milestone-5",
+          "requirements": ["REQ-030"]
+        },
+        {
+          "name": "FixPassResult",
+          "type": "dataclass",
+          "milestone": "milestone-5",
+          "fields": {
+            "pass_number": "int",
+            "violations_before": "int",
+            "violations_after": "int",
+            "fixes_attempted": "int",
+            "fixes_resolved": "int",
+            "regressions": "list[dict]",
+            "fix_effectiveness": "float (fixes_resolved / fixes_attempted)",
+            "regression_rate": "float (new_violations / total_fixes_applied)",
+            "new_defect_discovery_rate": "int",
+            "score_delta": "float",
+            "cost": "float",
+            "duration_s": "float"
+          },
+          "requirements": ["REQ-031", "REQ-032"]
+        },
+        {
+          "name": "execute_fix_pass",
+          "type": "async function",
+          "signature": "(state: Run4State, config: Run4Config, pass_number: int) -> FixPassResult",
+          "description": "Execute one fix pass: DISCOVER -> CLASSIFY -> GENERATE -> APPLY -> VERIFY -> REGRESS",
+          "milestone": "milestone-5",
+          "requirements": ["REQ-031"]
+        },
+        {
+          "name": "check_convergence",
+          "type": "function",
+          "signature": "(state: Run4State, config: Run4Config, pass_results: list[FixPassResult]) -> tuple[bool, str]",
+          "description": "Check hard/soft stop conditions for fix loop",
+          "milestone": "milestone-5",
+          "requirements": ["REQ-033"]
+        },
+        {
+          "name": "compute_convergence",
+          "type": "function",
+          "signature": "(remaining_p0: int, remaining_p1: int, remaining_p2: int, initial_total_weighted: float) -> float",
+          "description": "convergence = 1.0 - (p0*0.4 + p1*0.3 + p2*0.1) / initial_total_weighted, converged >= 0.85",
+          "milestone": "milestone-5",
+          "requirements": ["TECH-007"]
+        },
+        {
+          "name": "take_violation_snapshot",
+          "type": "function",
+          "signature": "(scan_results: dict) -> dict[str, list[str]]",
+          "description": "Create snapshot {scan_code: [file_path1, ...]} for regression detection",
+          "milestone": "milestone-5",
+          "requirements": ["TECH-008"]
+        },
+        {
+          "name": "run_fix_loop",
+          "type": "async function",
+          "signature": "(state: Run4State, config: Run4Config) -> list[FixPassResult]",
+          "description": "Main fix loop orchestrator: iterate passes until convergence or hard stop",
+          "milestone": "milestone-5",
+          "requirements": ["REQ-031", "REQ-033"]
+        }
+      ]
+    },
+    "src.run4.scoring": {
+      "exports": [
+        {
+          "name": "compute_scores",
+          "type": "function",
+          "signature": "(findings: list, weights: dict | None = None) -> dict[str, float]",
+          "milestone": "milestone-1",
+          "expanded_in": "milestone-6",
+          "requirements": []
+        },
+        {
+          "name": "SystemScore",
+          "type": "dataclass",
+          "milestone": "milestone-6",
+          "fields": {
+            "system_name": "str",
+            "functional_completeness": "float (0-30)",
+            "test_health": "float (0-20)",
+            "contract_compliance": "float (0-20)",
+            "code_quality": "float (0-15)",
+            "docker_health": "float (0-10)",
+            "documentation": "float (0-5)",
+            "total": "float (sum of above)",
+            "traffic_light": "str (GREEN|YELLOW|RED)"
+          },
+          "requirements": ["REQ-034"]
+        },
+        {
+          "name": "compute_system_score",
+          "type": "function",
+          "signature": "(system_name: str, req_pass_rate: float, test_pass_rate: float, contract_pass_rate: float, total_violations: int, total_loc: int, health_check_rate: float, artifacts_present: int, artifacts_required: int = 5) -> SystemScore",
+          "description": "Formula: (req_pass*30) + (test_pass*20) + (contract*20) + max(0, 15 - violation_density*1.5) + (health*10) + (artifacts/required*5)",
+          "milestone": "milestone-6",
+          "requirements": ["REQ-034"]
+        },
+        {
+          "name": "IntegrationScore",
+          "type": "dataclass",
+          "milestone": "milestone-6",
+          "fields": {
+            "mcp_connectivity": "float (0-25)",
+            "data_flow_integrity": "float (0-25)",
+            "contract_fidelity": "float (0-25)",
+            "pipeline_completion": "float (0-25)",
+            "total": "float (sum of above)",
+            "traffic_light": "str (GREEN|YELLOW|RED)"
+          },
+          "requirements": ["REQ-035"]
+        },
+        {
+          "name": "compute_integration_score",
+          "type": "function",
+          "signature": "(mcp_tools_ok: int, flows_passing: int, flows_total: int, cross_build_violations: int, phases_complete: int, phases_total: int) -> IntegrationScore",
+          "description": "Formula: (mcp/20*25) + (flows/total*25) + max(0, 25-violations*2.5) + (phases/total*25)",
+          "milestone": "milestone-6",
+          "requirements": ["REQ-035"]
+        },
+        {
+          "name": "AggregateScore",
+          "type": "dataclass",
+          "milestone": "milestone-6",
+          "fields": {
+            "build1": "float",
+            "build2": "float",
+            "build3": "float",
+            "integration": "float",
+            "aggregate": "float",
+            "traffic_light": "str (GREEN|YELLOW|RED)"
+          },
+          "requirements": ["REQ-036"]
+        },
+        {
+          "name": "compute_aggregate",
+          "type": "function",
+          "signature": "(build1_score: float, build2_score: float, build3_score: float, integration_score: float) -> AggregateScore",
+          "description": "Formula: (build1*0.30) + (build2*0.25) + (build3*0.25) + (integration*0.20). GREEN >= 80, YELLOW >= 50, RED < 50",
+          "milestone": "milestone-6",
+          "requirements": ["REQ-036"]
+        },
+        {
+          "name": "THRESHOLDS",
+          "type": "dict",
+          "milestone": "milestone-6",
+          "value": {
+            "per_system_minimum": 60,
+            "integration_minimum": 50,
+            "aggregate_minimum": 65,
+            "p0_remaining_max": 0,
+            "p1_remaining_max": 3,
+            "test_pass_rate_min": 0.85,
+            "mcp_tool_coverage_min": 0.90,
+            "fix_convergence_min": 0.70
+          },
+          "requirements": ["TECH-009"]
+        },
+        {
+          "name": "is_good_enough",
+          "type": "function",
+          "signature": "(aggregate: AggregateScore, p0_count: int, p1_count: int, test_pass_rate: float, mcp_coverage: float, convergence: float) -> tuple[bool, list[str]]",
+          "description": "Check all thresholds, returns (passed, list_of_failures)",
+          "milestone": "milestone-6",
+          "requirements": ["TECH-009"]
+        }
+      ]
+    },
+    "src.run4.audit_report": {
+      "exports": [
+        {
+          "name": "generate_report",
+          "type": "function",
+          "signature": "(state: object, output_path: Path | None = None) -> str",
+          "milestone": "milestone-1",
+          "expanded_in": "milestone-6",
+          "requirements": []
+        },
+        {
+          "name": "generate_audit_report",
+          "type": "function",
+          "signature": "(state: Run4State, scores: AggregateScore, system_scores: dict[str, SystemScore], integration_score: IntegrationScore, fix_results: list[FixPassResult], rtm: list[dict], interface_matrix: list[dict], flow_coverage: list[dict], dark_corners: list[dict], cost_breakdown: dict) -> str",
+          "description": "Generate SUPER_TEAM_AUDIT_REPORT.md with 7 sections: Executive Summary, Methodology, Per-System Assessment, Integration Assessment, Fix Pass History, Gap Analysis, Appendices (A-D)",
+          "milestone": "milestone-6",
+          "requirements": ["REQ-037"]
+        },
+        {
+          "name": "build_rtm",
+          "type": "function",
+          "signature": "(build_prds: dict[str, list[dict]], implementations: dict[str, list[str]], test_results: dict[str, dict]) -> list[dict]",
+          "description": "Requirements Traceability Matrix mapping REQ-xxx to implementations and test results",
+          "milestone": "milestone-6",
+          "requirements": ["REQ-038"]
+        },
+        {
+          "name": "build_interface_matrix",
+          "type": "function",
+          "signature": "(mcp_test_results: dict[str, dict]) -> list[dict]",
+          "description": "20-tool MCP interface coverage matrix with valid/error/response columns",
+          "milestone": "milestone-6",
+          "requirements": ["REQ-039"]
+        },
+        {
+          "name": "build_flow_coverage",
+          "type": "function",
+          "signature": "(flow_test_results: dict[str, dict]) -> list[dict]",
+          "description": "5 primary data flow paths coverage: registration, login, order, event, notification",
+          "milestone": "milestone-6",
+          "requirements": ["REQ-040"]
+        },
+        {
+          "name": "test_dark_corners",
+          "type": "async function",
+          "signature": "(config: Run4Config, state: Run4State) -> list[dict]",
+          "description": "5 edge case tests: MCP race, DNS resolution, builder conflicts, crash resume, large PRD",
+          "milestone": "milestone-6",
+          "requirements": ["REQ-041"]
+        },
+        {
+          "name": "build_cost_breakdown",
+          "type": "function",
+          "signature": "(state: Run4State) -> dict",
+          "description": "Per-phase cost and duration with budget comparison",
+          "milestone": "milestone-6",
+          "requirements": ["REQ-042"]
+        }
+      ]
+    },
+    "tests.run4.conftest": {
+      "exports": [
+        {
+          "name": "MockToolResult",
+          "type": "dataclass",
+          "fields": {"content": "list[Any]", "isError": "bool (default: False)"},
+          "milestone": "milestone-1"
+        },
+        {
+          "name": "MockTextContent",
+          "type": "dataclass",
+          "fields": {"type": "str (default: 'text')", "text": "str (default: '')"},
+          "milestone": "milestone-1"
+        },
+        {
+          "name": "make_mcp_result",
+          "type": "function",
+          "signature": "(data: dict, is_error: bool = False) -> MockToolResult",
+          "description": "Build mock MCP tool result with JSON-encoded TextContent",
+          "milestone": "milestone-1"
+        }
+      ]
+    }
+  },
+  "mcp_wiring_contracts": {
+    "architect": {
+      "server_module": "src.architect.mcp_server",
+      "tools_count": 4,
+      "tools": [
+        {
+          "svc_id": "SVC-001",
+          "tool_name": "decompose",
+          "client_method": "ArchitectClient.decompose(prd_text)",
+          "request": {"prd_text": "str"},
+          "response": "DecompositionResult {service_map, domain_model, contract_stubs, validation_issues, interview_questions}",
+          "milestone": "milestone-2",
+          "requirements": ["SVC-001", "REQ-009"]
+        },
+        {
+          "svc_id": "SVC-002",
+          "tool_name": "get_service_map",
+          "client_method": "ArchitectClient.get_service_map()",
+          "request": null,
+          "response": "ServiceMap {project_name, services, generated_at, prd_hash, build_cycle_id}",
+          "milestone": "milestone-2",
+          "requirements": ["SVC-002", "REQ-009"]
+        },
+        {
+          "svc_id": "SVC-003",
+          "tool_name": "get_contracts_for_service",
+          "client_method": "ArchitectClient.get_contracts_for_service(service_name)",
+          "request": {"service_name": "str"},
+          "response": "list[{id, role, type, counterparty, summary}]",
+          "milestone": "milestone-2",
+          "requirements": ["SVC-003", "REQ-009"]
+        },
+        {
+          "svc_id": "SVC-004",
+          "tool_name": "get_domain_model",
+          "client_method": "ArchitectClient.get_domain_model()",
+          "request": null,
+          "response": "DomainModel {entities, relationships, generated_at}",
+          "milestone": "milestone-2",
+          "requirements": ["SVC-004", "REQ-009"]
+        }
+      ],
+      "port": {"internal": 8000, "external": 8001},
+      "health_endpoint": "/api/health",
+      "env": {"DATABASE_PATH": "./data/architect.db", "CONTRACT_ENGINE_URL": "http://localhost:8002"}
+    },
+    "contract_engine": {
+      "server_module": "src.contract_engine.mcp_server",
+      "tools_count": 9,
+      "tools": [
+        {
+          "svc_id": "SVC-005",
+          "tool_name": "get_contract",
+          "client_method": "ContractEngineClient.get_contract(contract_id)",
+          "request": {"contract_id": "str"},
+          "response": "ContractEntry {id, service_name, type, version, spec, spec_hash, status}",
+          "milestone": "milestone-2",
+          "requirements": ["SVC-005", "REQ-010"]
+        },
+        {
+          "svc_id": "SVC-006",
+          "tool_name": "validate_endpoint",
+          "client_method": "ContractEngineClient.validate_endpoint(...)",
+          "request": {"service_name": "str", "method": "str", "path": "str", "response_body": "dict", "status_code": "int"},
+          "response": "ContractValidation {valid, violations}",
+          "milestone": "milestone-2",
+          "requirements": ["SVC-006", "REQ-010"]
+        },
+        {
+          "svc_id": "SVC-007",
+          "tool_name": "generate_tests",
+          "client_method": "ContractEngineClient.generate_tests(...)",
+          "request": {"contract_id": "str", "framework": "str", "include_negative": "bool"},
+          "response": "string",
+          "milestone": "milestone-2",
+          "requirements": ["SVC-007", "REQ-010"]
+        },
+        {
+          "svc_id": "SVC-008",
+          "tool_name": "check_breaking_changes",
+          "client_method": "ContractEngineClient.check_breaking_changes(...)",
+          "request": {"contract_id": "str", "new_spec": "dict"},
+          "response": "list[{change_type, path, severity, old_value, new_value, affected_consumers}]",
+          "milestone": "milestone-2",
+          "requirements": ["SVC-008", "REQ-010"]
+        },
+        {
+          "svc_id": "SVC-009",
+          "tool_name": "mark_implemented",
+          "client_method": "ContractEngineClient.mark_implemented(...)",
+          "request": {"contract_id": "str", "service_name": "str", "evidence_path": "str"},
+          "response": "MarkResult {marked, total_implementations, all_implemented}",
+          "milestone": "milestone-2",
+          "requirements": ["SVC-009", "REQ-010"]
+        },
+        {
+          "svc_id": "SVC-010",
+          "tool_name": "get_unimplemented_contracts",
+          "client_method": "ContractEngineClient.get_unimplemented_contracts(...)",
+          "request": {"service_name": "str"},
+          "response": "list[{id, type, expected_service, version, status}]",
+          "milestone": "milestone-2",
+          "requirements": ["SVC-010", "REQ-010"]
+        },
+        {
+          "svc_id": "SVC-010a",
+          "tool_name": "create_contract",
+          "client_method": "Build 3 Integrator direct MCP call",
+          "request": "contract spec dict",
+          "response": "contract entry",
+          "milestone": "milestone-2",
+          "requirements": ["SVC-010a", "REQ-010"]
+        },
+        {
+          "svc_id": "SVC-010b",
+          "tool_name": "validate_spec",
+          "client_method": "Build 3 Integrator direct MCP call",
+          "request": "spec dict",
+          "response": "validation result",
+          "milestone": "milestone-2",
+          "requirements": ["SVC-010b", "REQ-010"]
+        },
+        {
+          "svc_id": "SVC-010c",
+          "tool_name": "list_contracts",
+          "client_method": "Build 3 Integrator direct MCP call",
+          "request": "optional filters",
+          "response": "list of contracts",
+          "milestone": "milestone-2",
+          "requirements": ["SVC-010c", "REQ-010"]
+        }
+      ],
+      "port": {"internal": 8000, "external": 8002},
+      "health_endpoint": "/api/health",
+      "env": {"DATABASE_PATH": "./data/contracts.db"}
+    },
+    "codebase_intelligence": {
+      "server_module": "src.codebase_intelligence.mcp_server",
+      "tools_count": 7,
+      "tools": [
+        {
+          "svc_id": "SVC-011",
+          "tool_name": "find_definition",
+          "client_method": "CodebaseIntelligenceClient.find_definition(symbol, language)",
+          "request": {"symbol": "str", "language": "str"},
+          "response": "DefinitionResult {file_path, line_start, line_end, kind, signature, docstring}",
+          "milestone": "milestone-2",
+          "requirements": ["SVC-011", "REQ-011"]
+        },
+        {
+          "svc_id": "SVC-012",
+          "tool_name": "find_callers",
+          "client_method": "CodebaseIntelligenceClient.find_callers(symbol, max_results)",
+          "request": {"symbol": "str", "max_results": "int"},
+          "response": "list[{file_path, line, caller_name}]",
+          "milestone": "milestone-2",
+          "requirements": ["SVC-012", "REQ-011"]
+        },
+        {
+          "svc_id": "SVC-013",
+          "tool_name": "find_dependencies",
+          "client_method": "CodebaseIntelligenceClient.find_dependencies(file_path)",
+          "request": {"file_path": "str"},
+          "response": "DependencyResult {imports, imported_by, transitive_deps, circular_deps}",
+          "milestone": "milestone-2",
+          "requirements": ["SVC-013", "REQ-011"]
+        },
+        {
+          "svc_id": "SVC-014",
+          "tool_name": "search_semantic",
+          "client_method": "CodebaseIntelligenceClient.search_semantic(...)",
+          "request": {"query": "str", "language": "str", "service_name": "str", "n_results": "int"},
+          "response": "list[{chunk_id, file_path, symbol_name, content, score, language, service_name, line_start, line_end}]",
+          "milestone": "milestone-2",
+          "requirements": ["SVC-014", "REQ-011"]
+        },
+        {
+          "svc_id": "SVC-015",
+          "tool_name": "get_service_interface",
+          "client_method": "CodebaseIntelligenceClient.get_service_interface(service_name)",
+          "request": {"service_name": "str"},
+          "response": "ServiceInterface {service_name, endpoints, events_published, events_consumed, exported_symbols}",
+          "milestone": "milestone-2",
+          "requirements": ["SVC-015", "REQ-011"]
+        },
+        {
+          "svc_id": "SVC-016",
+          "tool_name": "check_dead_code",
+          "client_method": "CodebaseIntelligenceClient.check_dead_code(service_name)",
+          "request": {"service_name": "str"},
+          "response": "list[{symbol_name, file_path, kind, line, service_name, confidence}]",
+          "milestone": "milestone-2",
+          "requirements": ["SVC-016", "REQ-011"]
+        },
+        {
+          "svc_id": "SVC-017",
+          "tool_name": "register_artifact",
+          "client_method": "CodebaseIntelligenceClient.register_artifact(file_path, service_name)",
+          "request": {"file_path": "str", "service_name": "str"},
+          "response": "ArtifactResult {indexed, symbols_found, dependencies_found, errors}",
+          "milestone": "milestone-2",
+          "requirements": ["SVC-017", "REQ-011"]
+        }
+      ],
+      "port": {"internal": 8000, "external": 8003},
+      "health_endpoint": "/api/health",
+      "env": {"DATABASE_PATH": "./data/symbols.db", "CHROMA_PATH": "./data/chroma", "GRAPH_PATH": "./data/graph.json"}
+    }
+  },
+  "subprocess_wiring_contracts": {
+    "SVC-018": {
+      "caller": "pipeline.run_parallel_builders",
+      "command": "python -m agent_team --cwd {dir} --depth {depth}",
+      "input": "config.yaml in builder dir",
+      "output": ".agent-team/STATE.json with summary dict",
+      "verification": "Exit code 0, STATE.json has summary.success",
+      "milestone": "milestone-3",
+      "requirements": ["SVC-018", "REQ-016"]
+    },
+    "SVC-019": {
+      "caller": "fix_loop.feed_violations_to_builder",
+      "command": "python -m agent_team --cwd {dir} --depth quick",
+      "input": "FIX_INSTRUCTIONS.md in builder dir",
+      "output": "Updated STATE.json with cost",
+      "verification": "Violations reduced after fix pass",
+      "milestone": "milestone-3",
+      "requirements": ["SVC-019", "REQ-020"]
+    },
+    "SVC-020": {
+      "caller": "pipeline.generate_builder_config",
+      "command": "N/A (file write)",
+      "input": "SuperOrchestratorConfig",
+      "output": "config.yaml loadable by _dict_to_config()",
+      "verification": "Config roundtrip: generate -> load -> no errors",
+      "milestone": "milestone-3",
+      "requirements": ["SVC-020", "REQ-018"]
+    }
+  },
+  "wire_tests": {
+    "session_lifecycle": [
+      {"wire_id": "WIRE-001", "test": "test_session_sequential_calls", "description": "Open session, 10 sequential calls, close; all succeed", "milestone": "milestone-2"},
+      {"wire_id": "WIRE-002", "test": "test_session_crash_recovery", "description": "Kill server process, verify client detects broken pipe", "milestone": "milestone-2"},
+      {"wire_id": "WIRE-003", "test": "test_session_timeout", "description": "Simulate slow tool exceeding mcp_tool_timeout_ms", "milestone": "milestone-2"},
+      {"wire_id": "WIRE-004", "test": "test_multi_server_concurrency", "description": "3 sessions simultaneously, parallel calls, no conflicts", "milestone": "milestone-2"},
+      {"wire_id": "WIRE-005", "test": "test_session_restart_data_access", "description": "Close session, reopen, verify data access", "milestone": "milestone-2"},
+      {"wire_id": "WIRE-006", "test": "test_malformed_json_handling", "description": "Tool produces malformed JSON, verify isError without crash", "milestone": "milestone-2"},
+      {"wire_id": "WIRE-007", "test": "test_nonexistent_tool_call", "description": "Call nonexistent tool, verify error response", "milestone": "milestone-2"},
+      {"wire_id": "WIRE-008", "test": "test_server_exit_detection", "description": "Server process exits non-zero, client detects", "milestone": "milestone-2"}
+    ],
+    "fallback": [
+      {"wire_id": "WIRE-009", "test": "test_fallback_contract_engine_unavailable", "description": "CE unavailable, Build 2 falls back to run_api_contract_scan()", "milestone": "milestone-2"},
+      {"wire_id": "WIRE-010", "test": "test_fallback_codebase_intel_unavailable", "description": "CI unavailable, Build 2 falls back to generate_codebase_map()", "milestone": "milestone-2"},
+      {"wire_id": "WIRE-011", "test": "test_fallback_architect_unavailable", "description": "Architect unavailable, standard PRD decomposition proceeds", "milestone": "milestone-2"}
+    ],
+    "cross_server": [
+      {"wire_id": "WIRE-012", "test": "test_architect_cross_server_contract_lookup", "description": "Architect's get_contracts_for_service internally calls CE HTTP", "milestone": "milestone-2"}
+    ],
+    "builder_wiring": [
+      {"wire_id": "WIRE-013", "test": "test_agent_teams_fallback_cli_unavailable", "description": "CLI unavailable, CLIBackend with logged warning, pipeline continues", "milestone": "milestone-3"},
+      {"wire_id": "WIRE-014", "test": "test_agent_teams_hard_failure_no_fallback", "description": "fallback_to_cli=False, CLI unavailable, RuntimeError raised", "milestone": "milestone-3"},
+      {"wire_id": "WIRE-015", "test": "test_builder_timeout_enforcement", "description": "builder_timeout_s=5, verify proc.kill() + await proc.wait()", "milestone": "milestone-3"},
+      {"wire_id": "WIRE-016", "test": "test_builder_environment_isolation", "description": "Builders inherit parent env, ANTHROPIC_API_KEY NOT passed explicitly", "milestone": "milestone-3"},
+      {"wire_id": "WIRE-021", "test": "test_agent_teams_positive_path", "description": "AgentTeamsBackend.execute_wave() completes with task state progression", "milestone": "milestone-3"}
+    ],
+    "docker_networking": [
+      {"wire_id": "WIRE-017", "test": "test_docker_compose_merge_networks", "description": "Frontend/backend network membership verified via docker network inspect", "milestone": "milestone-4"},
+      {"wire_id": "WIRE-018", "test": "test_inter_container_dns", "description": "Architect resolves contract-engine hostname via HTTP", "milestone": "milestone-4"},
+      {"wire_id": "WIRE-019", "test": "test_traefik_pathprefix_routing", "description": "PathPrefix labels route correctly through Traefik", "milestone": "milestone-4"},
+      {"wire_id": "WIRE-020", "test": "test_health_check_cascade_order", "description": "Startup order respects dependency chain", "milestone": "milestone-4"}
+    ]
+  },
+  "state_json_cross_build_contract": {
+    "description": "STATE.JSON is the critical interface between Build 2 and Build 3",
+    "file_path": "{output_dir}/.agent-team/STATE.json",
+    "schema": {
+      "run_id": {"type": "string", "required": true},
+      "health": {"type": "string", "enum": ["green", "yellow", "red"], "required": true},
+      "current_phase": {"type": "string", "required": true},
+      "completed_phases": {"type": "array", "items": "string", "required": true},
+      "total_cost": {"type": "float", "minimum": 0, "required": true},
+      "summary": {
+        "type": "object",
+        "required": true,
+        "properties": {
+          "success": {"type": "boolean", "required": true},
+          "test_passed": {"type": "integer", "required": true},
+          "test_total": {"type": "integer", "required": true},
+          "convergence_ratio": {"type": "float", "minimum": 0.0, "maximum": 1.0, "required": true}
+        }
+      },
+      "artifacts": {"type": "object"},
+      "schema_version": {"type": "integer", "value": 2}
+    },
+    "validation_rules": [
+      "summary.success MUST be boolean",
+      "summary.test_passed and summary.test_total MUST be int",
+      "summary.convergence_ratio MUST be float in [0.0, 1.0]",
+      "total_cost MUST be float >= 0",
+      "health MUST be one of green, yellow, red",
+      "completed_phases MUST be list of strings"
+    ],
+    "milestone": "milestone-3"
+  },
+  "fix_instructions_contract": {
+    "description": "FIX_INSTRUCTIONS.MD format for builder fix passes",
+    "file_path": "{builder_cwd}/FIX_INSTRUCTIONS.md",
+    "format": "markdown",
+    "structure": [
+      "# Fix Instructions",
+      "## Priority: P0 (Must Fix)",
+      "### FINDING-NNN: {title}",
+      "- **Component**: {component}",
+      "- **Evidence**: {evidence}",
+      "- **Action**: {recommendation}",
+      "## Priority: P1 (Should Fix)",
+      "..."
+    ],
+    "milestone": "milestone-3"
+  },
+  "docker_architecture": {
+    "compose_files": [
+      {"file": "docker-compose.infra.yml", "tier": 0, "contents": "postgres (16-alpine), redis (7-alpine)"},
+      {"file": "docker-compose.build1.yml", "tier": 1, "contents": "architect, contract-engine, codebase-intelligence"},
+      {"file": "docker-compose.traefik.yml", "tier": 2, "contents": "traefik (v3.6)"},
+      {"file": "docker-compose.generated.yml", "tier": 3, "contents": "auth-service, order-service, notification-service (generated at runtime)"},
+      {"file": "docker-compose.run4.yml", "tier": 4, "contents": "Cross-build wiring overrides (NEW)"}
+    ],
+    "networks": {
+      "frontend": {
+        "members": ["traefik", "architect", "contract-engine", "codebase-intelligence", "auth-service", "order-service", "notification-service"],
+        "constraints": ["traefik is NOT on backend network"]
+      },
+      "backend": {
+        "members": ["postgres", "redis", "architect", "contract-engine", "codebase-intelligence", "auth-service", "order-service", "notification-service"],
+        "constraints": ["postgres and redis are NOT on frontend network"]
+      }
+    },
+    "health_check_cascade": [
+      {"tier": 0, "services": ["postgres", "redis"], "depends_on": null},
+      {"tier": 1, "services": ["contract-engine"], "depends_on": ["postgres"]},
+      {"tier": 2, "services": ["architect", "codebase-intelligence"], "depends_on": ["contract-engine"]},
+      {"tier": 3, "services": ["auth-service", "order-service", "notification-service"], "depends_on": ["architect", "contract-engine"]},
+      {"tier": 4, "services": ["traefik"], "depends_on": ["all services"]}
+    ],
+    "port_assignments": {
+      "architect": {"internal": 8000, "external": 8001},
+      "contract-engine": {"internal": 8000, "external": 8002},
+      "codebase-intelligence": {"internal": 8000, "external": 8003},
+      "postgres": {"internal": 5432, "external": 5432},
+      "redis": {"internal": 6379, "external": 6379},
+      "traefik_http": {"internal": 80, "external": 80},
+      "traefik_api": {"internal": 8080, "external": 8080},
+      "auth-service": {"internal": 8080, "external": "dynamic"},
+      "order-service": {"internal": 8080, "external": "dynamic"},
+      "notification-service": {"internal": 8080, "external": "dynamic"}
+    },
+    "resource_budget": {
+      "build1_services": "2GB total",
+      "postgres_redis": "640MB total",
+      "traefik": "128MB",
+      "generated_services": "1.5GB total",
+      "total_cap": "4.5GB"
+    },
+    "milestone": "milestone-4",
+    "requirements": ["TECH-004", "TECH-005", "TECH-006", "WIRE-017", "WIRE-018", "WIRE-019", "WIRE-020"]
+  },
+  "security_contracts": [
+    {
+      "id": "SEC-001",
+      "requirement": "No ANTHROPIC_API_KEY passed explicitly to builder subprocesses",
+      "verification": "Check builder env dict, verify key NOT in explicit args",
+      "milestone": "milestone-4"
+    },
+    {
+      "id": "SEC-002",
+      "requirement": "Traefik dashboard disabled by default",
+      "verification": "Check --api.dashboard=false in compose command",
+      "milestone": "milestone-4"
+    },
+    {
+      "id": "SEC-003",
+      "requirement": "Docker socket mounted read-only",
+      "verification": "Check :ro suffix on docker.sock volume",
+      "milestone": "milestone-4"
+    }
+  ],
+  "quality_gate_layers": {
+    "layer1_builder_results": {
+      "description": "Evaluate BuilderResult per service (test pass rate, convergence)",
+      "milestone": "milestone-4"
+    },
+    "layer2_integration_results": {
+      "description": "Evaluate contract test results from Schemathesis/Pact",
+      "milestone": "milestone-4"
+    },
+    "layer3_code_quality": {
+      "checks": [
+        {"id": "SEC-SCAN-001", "rule": "No hardcoded secrets", "detection": "Regex: password|secret|api_key\\s*=\\s*[\"'][^\"']+[\"']"},
+        {"id": "CORS-001", "rule": "CORS origins not '*' in production", "detection": "Config file scan"},
+        {"id": "LOG-001", "rule": "No print() statements", "detection": "AST/grep scan, use logging"},
+        {"id": "LOG-002", "rule": "All endpoints have request logging middleware", "detection": "Route inspection"},
+        {"id": "DOCKER-001", "rule": "All services have HEALTHCHECK instruction", "detection": "Dockerfile scan"},
+        {"id": "DOCKER-002", "rule": "No :latest tags in FROM", "detection": "Dockerfile scan"}
+      ],
+      "milestone": "milestone-4"
+    },
+    "layer4_static_analysis": {
+      "checks": [
+        {"id": "DEAD-001", "rule": "Events published but never consumed", "detection": "Cross-reference publish/subscribe"},
+        {"id": "DEAD-002", "rule": "Contracts registered but never validated", "detection": "Contract Engine query"},
+        {"id": "ORPHAN-001", "rule": "Service in compose but no Traefik route", "detection": "Compose + label scan"},
+        {"id": "NAME-001", "rule": "Service names consistent across compose/code/contracts", "detection": "String matching"}
+      ],
+      "milestone": "milestone-4"
+    }
+  },
+  "planted_violations": [
+    {
+      "id": "HEALTH-001",
+      "description": "One service missing /health endpoint",
+      "milestone": "milestone-4",
+      "requirements": ["REQ-028"]
+    },
+    {
+      "id": "SCHEMA-001",
+      "description": "One endpoint returning field not in OpenAPI contract",
+      "milestone": "milestone-4",
+      "requirements": ["REQ-028"]
+    },
+    {
+      "id": "LOG-001",
+      "description": "One print() instead of logger",
+      "milestone": "milestone-4",
+      "requirements": ["REQ-028"]
+    }
+  ],
+  "convergence_contracts": {
+    "hard_stop_triggers": [
+      "P0 == 0 AND P1 == 0",
+      "max_fix_passes reached",
+      "Budget exhausted (total_cost >= max_budget_usd)",
+      "fix_effectiveness < 30% for 2 consecutive passes",
+      "regression_rate > 25% for 2 consecutive passes"
+    ],
+    "soft_convergence": [
+      "P0 == 0",
+      "P1 <= 2",
+      "new_defect_rate < 3 per pass for 2 consecutive",
+      "aggregate_score >= 70"
+    ],
+    "convergence_formula": "1.0 - (remaining_p0 * 0.4 + remaining_p1 * 0.3 + remaining_p2 * 0.1) / initial_total_weighted",
+    "converged_threshold": 0.85,
+    "milestone": "milestone-5",
+    "requirements": ["REQ-033", "TECH-007"]
+  },
+  "scoring_contracts": {
+    "system_score_formula": {
+      "functional_completeness": "req_pass_rate * 30 (max 30)",
+      "test_health": "test_pass_rate * 20 (max 20)",
+      "contract_compliance": "contract_pass_rate * 20 (max 20)",
+      "code_quality": "max(0, 15 - violation_density * 1.5) (max 15, where violation_density = violations / (loc / 1000))",
+      "docker_health": "health_check_rate * 10 (max 10)",
+      "documentation": "artifacts_present / artifacts_required * 5 (max 5)",
+      "total": "sum of above (max 100)"
+    },
+    "integration_score_formula": {
+      "mcp_connectivity": "mcp_tools_ok / 20 * 25 (max 25)",
+      "data_flow_integrity": "flows_passing / flows_total * 25 (max 25)",
+      "contract_fidelity": "max(0, 25 - cross_build_violations * 2.5) (max 25)",
+      "pipeline_completion": "phases_complete / phases_total * 25 (max 25)",
+      "total": "sum of above (max 100)"
+    },
+    "aggregate_formula": {
+      "weights": {"build1": 0.30, "build2": 0.25, "build3": 0.25, "integration": 0.20},
+      "formula": "(build1 * 0.30) + (build2 * 0.25) + (build3 * 0.25) + (integration * 0.20)"
+    },
+    "traffic_light": {
+      "GREEN": "80-100",
+      "YELLOW": "50-79",
+      "RED": "0-49"
+    },
+    "milestone": "milestone-6",
+    "requirements": ["REQ-034", "REQ-035", "REQ-036"]
+  },
+  "requirements_summary": {
+    "REQ": {"count": 42, "range": "REQ-001 to REQ-042"},
+    "TECH": {"count": 9, "range": "TECH-001 to TECH-009"},
+    "INT": {"count": 7, "range": "INT-001 to INT-007"},
+    "WIRE": {"count": 21, "range": "WIRE-001 to WIRE-021"},
+    "SVC": {"count": 20, "range": "SVC-001 to SVC-020 (including 010a, 010b, 010c)"},
+    "TEST": {"count": 18, "range": "TEST-001 to TEST-018"},
+    "SEC": {"count": 3, "range": "SEC-001 to SEC-003"},
+    "total": 120
+  },
+  "test_matrix": {
+    "build1_verification": {"tests": 20, "P0": 14, "P1": 5, "P2": 1},
+    "build2_verification": {"tests": 10, "P0": 6, "P1": 4, "P2": 0},
+    "build3_verification": {"tests": 10, "P0": 5, "P1": 4, "P2": 1},
+    "cross_build_integration": {"tests": 10, "P0": 6, "P1": 4, "P2": 0},
+    "total": {"tests": 57, "P0": 37, "P1": 18, "P2": 2}
+  },
+  "pipeline_phases": [
+    {"phase": 1, "name": "Build 1 Health", "description": "All 3 services HTTP 200", "requirement": "REQ-021"},
+    {"phase": 2, "name": "MCP Smoke", "description": "Key MCP tools callable", "requirement": "REQ-022"},
+    {"phase": 3, "name": "Architect Decomposition", "description": "ServiceMap + DomainModel", "requirement": "REQ-023"},
+    {"phase": 4, "name": "Contract Registration", "description": "All contracts stored + valid", "requirement": "REQ-024"},
+    {"phase": 5, "name": "Parallel Builders", "description": "3 services built", "requirement": "REQ-025"},
+    {"phase": 6, "name": "Deployment + Integration", "description": "Docker up + tests pass", "requirement": "REQ-026"},
+    {"phase": 7, "name": "Quality Gate", "description": "4-layer verdict", "requirement": "REQ-027"}
+  ],
+  "success_criteria": [
+    {"id": "SC-01", "criterion": "Pipeline runs end-to-end", "pass_condition": "State reaches 'complete'"},
+    {"id": "SC-02", "criterion": "3-service TaskTracker deploys", "pass_condition": "All 3 'healthy' in docker compose ps"},
+    {"id": "SC-03", "criterion": "Integration tests pass", "pass_condition": "overall_health != 'failed'"},
+    {"id": "SC-04", "criterion": "Contract violations detected", "pass_condition": "Planted violation in QUALITY_GATE_REPORT.md"},
+    {"id": "SC-05", "criterion": "Codebase Intelligence indexes code", "pass_condition": "total_symbols > 0 after build"},
+    {"id": "SC-06", "criterion": "Codebase Intelligence MCP responds", "pass_condition": "find_definition('User') returns result"},
+    {"id": "SC-07", "criterion": "Total time under 6 hours", "pass_condition": "GREEN: < 6h"}
+  ],
+  "technology_stack": {
+    "test_framework": "pytest + pytest-asyncio",
+    "http_client": "httpx (async)",
+    "docker_testing": "Testcontainers (Python)",
+    "mcp_client": "mcp SDK (Python, >=1.25)",
+    "contract_testing": "Schemathesis + Pact",
+    "process_management": "asyncio.create_subprocess_exec",
+    "state_persistence": "JSON (atomic write via tmp+rename)",
+    "api_gateway": "Traefik v3.6",
+    "database": "PostgreSQL 16",
+    "cache": "Redis 7"
+  },
+  "cross_milestone_dependencies": {
+    "milestone-2_consumes_from_milestone-1": [
+      "Run4Config (timeout values, build paths)",
+      "conftest.py fixtures (mock_mcp_session, make_mcp_result, server params)",
+      "sample_prd.md (Architect decompose roundtrip test)",
+      "mcp_health.check_mcp_health() (handshake tests)"
+    ],
+    "milestone-3_consumes_from_milestone-1": [
+      "Run4Config (builder_timeout_s, max_concurrent_builders, builder_depth)",
+      "Run4State (state persistence for builder results)",
+      "parse_builder_state() stub (expanded implementation)",
+      "conftest.py fixtures (run4_config, build1_root)"
+    ],
+    "milestone-4_consumes_from_milestone-2": [
+      "MCP tool verification (confirms tools work before pipeline uses them)",
+      "Client wrapper validation (confirms safe defaults and retry behavior)"
+    ],
+    "milestone-4_consumes_from_milestone-3": [
+      "invoke_builder(), run_parallel_builders()",
+      "generate_builder_config()",
+      "parse_builder_state()",
+      "feed_violations_to_builder()"
+    ],
+    "milestone-5_consumes_from_milestone-4": [
+      "MCP wiring results (defects from failed MCP tests)",
+      "Builder results (defects from failed builds)",
+      "Docker deployment results (defects from unhealthy services)",
+      "Integration test results (defects from failed E2E flows)",
+      "Quality Gate results (defects from L1-L4 checks)",
+      "Contract compliance results (defects from Schemathesis)"
+    ],
+    "milestone-6_consumes_from_all": [
+      "M1: Config, state, fixture validation results",
+      "M2: MCP tool test results (20 tools), wiring status",
+      "M3: Builder invocation results, config compatibility",
+      "M4: Pipeline phase results, Docker health, contract compliance",
+      "M5: Defect catalog, fix pass metrics, convergence"
+    ]
+  }
+}

@@ -1,0 +1,98 @@
+{
+  "consumer": {
+    "name": "order-service"
+  },
+  "provider": {
+    "name": "auth-service"
+  },
+  "metadata": {
+    "pactSpecification": {
+      "version": "4.0"
+    }
+  },
+  "interactions": [
+    {
+      "description": "a request to authenticate a user",
+      "type": "Synchronous/HTTP",
+      "request": {
+        "method": "POST",
+        "path": "/login",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "content": {
+            "email": "testuser@example.com",
+            "password": "securepassword123"
+          },
+          "contentType": "application/json",
+          "encoded": false
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "content": {
+            "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3OC1hYmNkLTEyMzQtZWZnaC0xMjM0NTY3ODkwYWIiLCJlbWFpbCI6InRlc3R1c2VyQGV4YW1wbGUuY29tIiwiZXhwIjoxNzA5MjMzNjAwfQ.mock_signature",
+            "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3OC1hYmNkLTEyMzQtZWZnaC0xMjM0NTY3ODkwYWIiLCJ0eXBlIjoicmVmcmVzaCIsImV4cCI6MTcwOTgzODQwMH0.mock_refresh_signature"
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "matchingRules": {
+          "body": {
+            "$.access_token": {
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.refresh_token": {
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "description": "a request to authenticate with invalid credentials",
+      "type": "Synchronous/HTTP",
+      "request": {
+        "method": "POST",
+        "path": "/login",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "content": {
+            "email": "nonexistent@example.com",
+            "password": "wrongpassword"
+          },
+          "contentType": "application/json",
+          "encoded": false
+        }
+      },
+      "response": {
+        "status": 401,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "content": {
+            "detail": "Invalid credentials"
+          },
+          "contentType": "application/json",
+          "encoded": false
+        }
+      }
+    }
+  ]
+}

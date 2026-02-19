@@ -1,0 +1,121 @@
+# =============================================================================
+# Tier 4: Run 4 Cross-Build Wiring Overrides
+# =============================================================================
+# Part of the 5-file compose merge architecture:
+#   Tier 0: docker-compose.infra.yml      (postgres, redis)
+#   Tier 1: docker-compose.build1.yml     (architect, contract-engine, codebase-intel)
+#   Tier 2: docker-compose.traefik.yml    (traefik reverse proxy)
+#   Tier 3: docker-compose.generated.yml  (auth, order, notification services)
+#   Tier 4: docker-compose.run4.yml       (THIS FILE)
+#
+# This file provides:
+#   1. Network overrides: Build 1 services join both frontend + backend networks
+#      (Tier 1 only defines backend; this adds frontend for Traefik routing)
+#   2. Traefik labels: PathPrefix routing for Build 1 services through the gateway
+#   3. Debug logging: LOG_LEVEL=DEBUG for all services during Run 4 verification
+#
+# No new services are defined -- only overrides via service merge.
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Build 1 service overrides: Add frontend network + Traefik labels
+  # ---------------------------------------------------------------------------
+
+  architect:
+    networks:
+      - frontend
+      - backend
+    environment:
+      - LOG_LEVEL=DEBUG
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.architect.rule=PathPrefix(`/api/architect`)"
+      - "traefik.http.routers.architect.entrypoints=web"
+      - "traefik.http.services.architect.loadbalancer.server.port=8000"
+
+  contract-engine:
+    networks:
+      - frontend
+      - backend
+    environment:
+      - LOG_LEVEL=DEBUG
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.contract-engine.rule=PathPrefix(`/api/contracts`)"
+      - "traefik.http.routers.contract-engine.entrypoints=web"
+      - "traefik.http.services.contract-engine.loadbalancer.server.port=8000"
+
+  codebase-intelligence:
+    networks:
+      - frontend
+      - backend
+    environment:
+      - LOG_LEVEL=DEBUG
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.codebase-intelligence.rule=PathPrefix(`/api/codebase`)"
+      - "traefik.http.routers.codebase-intelligence.entrypoints=web"
+      - "traefik.http.services.codebase-intelligence.loadbalancer.server.port=8000"
+
+  # ---------------------------------------------------------------------------
+  # Traefik override: Debug logging
+  # ---------------------------------------------------------------------------
+
+  traefik:
+    command:
+      - "--api.dashboard=false"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--log.level=DEBUG"
+      - "--accesslog=true"
+    environment:
+      - LOG_LEVEL=DEBUG
+
+  # ---------------------------------------------------------------------------
+  # Generated services overrides: Debug logging
+  # ---------------------------------------------------------------------------
+
+  auth-service:
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/auth_db
+      - JWT_SECRET=${JWT_SECRET:-super-team-dev-secret}
+      - LOG_LEVEL=DEBUG
+      - SERVICE_NAME=auth-service
+
+  order-service:
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/order_db
+      - JWT_SECRET=${JWT_SECRET:-super-team-dev-secret}
+      - AUTH_SERVICE_URL=http://auth-service:8080
+      - LOG_LEVEL=DEBUG
+      - SERVICE_NAME=order-service
+
+  notification-service:
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/notification_db
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=${JWT_SECRET:-super-team-dev-secret}
+      - AUTH_SERVICE_URL=http://auth-service:8080
+      - LOG_LEVEL=DEBUG
+      - SERVICE_NAME=notification-service
+
+  # ---------------------------------------------------------------------------
+  # Infrastructure overrides: Debug logging
+  # ---------------------------------------------------------------------------
+
+  postgres:
+    environment:
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+    command: ["postgres", "-c", "log_statement=all", "-c", "log_min_duration_statement=0"]
+
+  redis:
+    command: ["redis-server", "--loglevel", "debug"]
+
+networks:
+  frontend:
+    external: true
+  backend:
+    external: true

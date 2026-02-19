@@ -1,0 +1,216 @@
+asyncapi: "3.0.0"
+info:
+  title: "User Events"
+  version: "1.0.0"
+  description: >
+    Asynchronous event definitions for user lifecycle events. Covers user
+    creation, updates, and deletion across the platform.
+
+defaultContentType: application/json
+
+channels:
+  user/created:
+    address: user/created
+    description: Channel for user creation events.
+    messages:
+      UserCreated:
+        $ref: "#/components/messages/UserCreated"
+
+  user/updated:
+    address: user/updated
+    description: Channel for user update events.
+    messages:
+      UserUpdated:
+        $ref: "#/components/messages/UserUpdated"
+
+  user/deleted:
+    address: user/deleted
+    description: Channel for user deletion events.
+    messages:
+      UserDeleted:
+        $ref: "#/components/messages/UserDeleted"
+
+operations:
+  sendUserCreated:
+    action: send
+    channel:
+      $ref: "#/channels/user~1created"
+    summary: Publish a user-created event.
+    description: Sent when a new user account is created in the system.
+    messages:
+      - $ref: "#/channels/user~1created/messages/UserCreated"
+
+  receiveUserCreated:
+    action: receive
+    channel:
+      $ref: "#/channels/user~1created"
+    summary: Subscribe to user-created events.
+    description: Receive notifications when new user accounts are created.
+    messages:
+      - $ref: "#/channels/user~1created/messages/UserCreated"
+
+  sendUserUpdated:
+    action: send
+    channel:
+      $ref: "#/channels/user~1updated"
+    summary: Publish a user-updated event.
+    description: Sent when an existing user account is modified.
+    messages:
+      - $ref: "#/channels/user~1updated/messages/UserUpdated"
+
+  receiveUserUpdated:
+    action: receive
+    channel:
+      $ref: "#/channels/user~1updated"
+    summary: Subscribe to user-updated events.
+    description: Receive notifications when user accounts are modified.
+    messages:
+      - $ref: "#/channels/user~1updated/messages/UserUpdated"
+
+  sendUserDeleted:
+    action: send
+    channel:
+      $ref: "#/channels/user~1deleted"
+    summary: Publish a user-deleted event.
+    description: Sent when a user account is removed from the system.
+    messages:
+      - $ref: "#/channels/user~1deleted/messages/UserDeleted"
+
+  receiveUserDeleted:
+    action: receive
+    channel:
+      $ref: "#/channels/user~1deleted"
+    summary: Subscribe to user-deleted events.
+    description: Receive notifications when user accounts are removed.
+    messages:
+      - $ref: "#/channels/user~1deleted/messages/UserDeleted"
+
+components:
+  messages:
+    UserCreated:
+      name: UserCreated
+      title: User Created Event
+      summary: Event emitted when a new user is created.
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/UserCreatedPayload"
+
+    UserUpdated:
+      name: UserUpdated
+      title: User Updated Event
+      summary: Event emitted when a user is updated.
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/UserUpdatedPayload"
+
+    UserDeleted:
+      name: UserDeleted
+      title: User Deleted Event
+      summary: Event emitted when a user is deleted.
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/UserDeletedPayload"
+
+  schemas:
+    User:
+      type: object
+      description: Full user entity.
+      required:
+        - id
+        - name
+        - email
+        - role
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique identifier for the user.
+        name:
+          type: string
+          description: Full name of the user.
+        email:
+          type: string
+          format: email
+          description: Email address of the user.
+        role:
+          type: string
+          description: Role assigned to the user.
+          enum:
+            - admin
+            - editor
+            - viewer
+        created_at:
+          type: string
+          format: date-time
+          description: Timestamp when the user was created.
+        updated_at:
+          type: string
+          format: date-time
+          description: Timestamp when the user was last updated.
+
+    UserCreatedPayload:
+      type: object
+      description: Payload for user creation events.
+      required:
+        - user_id
+        - name
+        - email
+        - created_at
+      properties:
+        user_id:
+          type: string
+          format: uuid
+          description: Unique identifier of the created user.
+        name:
+          type: string
+          description: Full name of the created user.
+        email:
+          type: string
+          format: email
+          description: Email address of the created user.
+        created_at:
+          type: string
+          format: date-time
+          description: Timestamp when the user was created.
+
+    UserUpdatedPayload:
+      type: object
+      description: Payload for user update events.
+      required:
+        - user_id
+        - changes
+        - updated_at
+      properties:
+        user_id:
+          type: string
+          format: uuid
+          description: Unique identifier of the updated user.
+        changes:
+          type: object
+          additionalProperties:
+            type: string
+          description: >
+            Dictionary of changed fields. Keys are field names; values are the
+            new values after the update.
+        updated_at:
+          type: string
+          format: date-time
+          description: Timestamp when the update occurred.
+
+    UserDeletedPayload:
+      type: object
+      description: Payload for user deletion events.
+      required:
+        - user_id
+        - deleted_at
+      properties:
+        user_id:
+          type: string
+          format: uuid
+          description: Unique identifier of the deleted user.
+        deleted_at:
+          type: string
+          format: date-time
+          description: Timestamp when the user was deleted.

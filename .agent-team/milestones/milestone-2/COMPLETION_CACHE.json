@@ -1,0 +1,7 @@
+{
+  "milestone_id": "milestone-2",
+  "title": "Build 1 to Build 2 MCP Wiring Verification",
+  "exported_files": [],
+  "exported_symbols": [],
+  "summary_line": "Verify all 20 MCP tools across 3 servers are callable from Build 2 client wrappers. Test session lifecycle, error recove"
+}
