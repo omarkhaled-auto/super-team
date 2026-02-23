@@ -150,7 +150,10 @@ def detect_regressions(
 # ---------------------------------------------------------------------------
 
 
-def classify_priority(violation: dict[str, Any]) -> str:
+def classify_priority(
+    violation: dict[str, Any],
+    graph_rag_client: Any | None = None,
+) -> str:
     """Classify a violation into P0-P3 priority using a decision tree.
 
     Decision tree:
@@ -162,6 +165,9 @@ def classify_priority(violation: dict[str, Any]) -> str:
     Args:
         violation: Dict with keys like ``severity``, ``category``, ``message``,
                    ``code``, ``type``, ``component``.
+        graph_rag_client: Optional Graph RAG client for cross-service impact
+                          analysis.  When provided (and the classified priority
+                          is not already P0), high-impact nodes may be promoted.
 
     Returns:
         Priority string: ``"P0"``, ``"P1"``, ``"P2"``, or ``"P3"``.
@@ -177,45 +183,65 @@ def classify_priority(violation: dict[str, Any]) -> str:
         "module not found", "syntax error", "crash", "segfault", "oom",
     ]
     if severity in ("critical", "fatal", "blocker"):
-        return "P0"
-    if any(kw in message for kw in p0_keywords):
-        return "P0"
-    if category in ("build", "startup", "infrastructure") and severity == "error":
-        return "P0"
+        classified_priority = "P0"
+    elif any(kw in message for kw in p0_keywords):
+        classified_priority = "P0"
+    elif category in ("build", "startup", "infrastructure") and severity == "error":
+        classified_priority = "P0"
 
     # P1: primary use case fails
-    p1_keywords = [
+    elif severity == "error":
+        classified_priority = "P1"
+    elif any(kw in message for kw in [
         "primary", "endpoint fail", "auth broken", "test fail", "api error",
         "500 error", "connection refused", "timeout", "data loss",
         "contract violation", "breaking change",
-    ]
-    if severity == "error":
-        return "P1"
-    if any(kw in message for kw in p1_keywords):
-        return "P1"
-    if category in ("test", "api", "contract", "security"):
-        return "P1"
+    ]):
+        classified_priority = "P1"
+    elif category in ("test", "api", "contract", "security"):
+        classified_priority = "P1"
 
     # P2: secondary feature broken
-    if severity == "warning":
-        return "P2"
-    p2_keywords = [
+    elif severity == "warning":
+        classified_priority = "P2"
+    elif any(kw in message for kw in [
         "secondary", "non-critical", "minor", "documentation",
         "incomplete", "missing test", "coverage",
-    ]
-    if any(kw in message for kw in p2_keywords):
-        return "P2"
-    if category in ("documentation", "coverage", "performance"):
-        return "P2"
+    ]):
+        classified_priority = "P2"
+    elif category in ("documentation", "coverage", "performance"):
+        classified_priority = "P2"
 
     # P3: cosmetic
-    if severity in ("info", "style", "hint"):
-        return "P3"
-    if category in ("style", "naming", "formatting"):
-        return "P3"
+    elif severity in ("info", "style", "hint"):
+        classified_priority = "P3"
+    elif category in ("style", "naming", "formatting"):
+        classified_priority = "P3"
 
-    # Default: P2 for unknown
-    return "P2"
+    else:
+        # Default: P2 for unknown
+        classified_priority = "P2"
+
+    # Graph RAG cross-service impact promotion
+    if graph_rag_client is not None and classified_priority not in ("P0",):
+        try:
+            import asyncio
+            node_id = violation.get("file_path", "") or violation.get("component", "")
+            if node_id:
+                result = asyncio.get_event_loop().run_until_complete(
+                    graph_rag_client.find_cross_service_impact(
+                        node_id=node_id, max_depth=2
+                    )
+                )
+                impact_count = result.get("total_impacted_nodes", 0)
+                if impact_count >= 10:
+                    classified_priority = "P0"
+                elif impact_count >= 3 and classified_priority > "P1":
+                    classified_priority = "P1"
+        except Exception:
+            pass  # Non-blocking
+
+    return classified_priority
 
 
 # ---------------------------------------------------------------------------

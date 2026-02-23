@@ -53,13 +53,18 @@ class QualityGateEngine:
         )
     """
 
-    def __init__(self, config: QualityGateConfig | None = None, project_root: Path | None = None) -> None:
+    def __init__(
+        self,
+        config: QualityGateConfig | None = None,
+        project_root: Path | None = None,
+        graph_rag_client: object | None = None,
+    ) -> None:
         self._config = config or QualityGateConfig()
         self._project_root = project_root or Path(".")
         self._layer1 = Layer1Scanner()
         self._layer2 = Layer2Scanner()
         self._layer3 = Layer3Scanner()
-        self._layer4 = Layer4Scanner()
+        self._layer4 = Layer4Scanner(graph_rag_client=graph_rag_client)
         self._aggregator = ScanAggregator()
 
     # ------------------------------------------------------------------

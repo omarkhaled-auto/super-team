@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import Any
 
 from src.build3_shared.models import (
     GateVerdict,
@@ -42,8 +43,8 @@ class Layer4Scanner:
         # result.violations contains advisory findings
     """
 
-    def __init__(self) -> None:
-        self._scanner = AdversarialScanner()
+    def __init__(self, graph_rag_client: Any | None = None) -> None:
+        self._scanner = AdversarialScanner(graph_rag_client=graph_rag_client)
 
     # ------------------------------------------------------------------
     # Public API

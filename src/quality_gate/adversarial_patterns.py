@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 from src.build3_shared.constants import ADVERSARIAL_SCAN_CODES
 from src.build3_shared.models import ScanViolation
@@ -118,6 +118,9 @@ class AdversarialScanner:
     Every finding is advisory (``severity="warning"`` or ``"info"``).
     """
 
+    def __init__(self, graph_rag_client: Any | None = None) -> None:
+        self._graph_rag_client = graph_rag_client
+
     # -- public interface ---------------------------------------------------
 
     async def scan(self, target_dir: Path) -> list[ScanViolation]:
@@ -133,7 +136,28 @@ class AdversarialScanner:
         violations.extend(self._check_naming_inconsistency(target_dir))
         violations.extend(self._check_error_handling(target_dir))
         violations.extend(self._check_race_conditions(target_dir))
+        if self._graph_rag_client is not None:
+            violations = await self._filter_dead_events_with_graph_rag(violations)
         return violations
+
+    async def _filter_dead_events_with_graph_rag(
+        self, violations: list[ScanViolation]
+    ) -> list[ScanViolation]:
+        """Remove false positive ADV-001/ADV-002 using Graph RAG cross-service data."""
+        try:
+            result = await self._graph_rag_client.check_cross_service_events()
+            matched_names = {
+                e.get("event_name", "") for e in result.get("matched_events", [])
+            }
+            return [
+                v for v in violations
+                if not (
+                    v.code in (ADVERSARIAL_SCAN_CODES[0], ADVERSARIAL_SCAN_CODES[1])
+                    and any(name in v.message for name in matched_names if name)
+                )
+            ]
+        except Exception:
+            return violations
 
     # -- helpers ------------------------------------------------------------
 

@@ -225,6 +225,9 @@ def generate_builder_config(
         "stack": service_info.stack,
         "port": service_info.port,
         "output_dir": str(output_dir),
+        "graph_rag_context": state.phase_artifacts.get(
+            "graph_rag_contexts", {}
+        ).get(service_info.service_id, ""),
     }
 
     # Return a dummy path for config - agent_team will use CLI args instead
@@ -1276,8 +1279,8 @@ async def run_integration_phase(
             ),
             contract_tests_passed=compliance_report.contract_tests_passed,
             contract_tests_total=compliance_report.contract_tests_total,
-            integration_tests_passed=flow_results.get("passed", 0) if isinstance(flow_results, dict) else 0,
-            integration_tests_total=flow_results.get("total", 0) if isinstance(flow_results, dict) else 0,
+            integration_tests_passed=flow_results.integration_tests_passed if hasattr(flow_results, "integration_tests_passed") else (flow_results.get("passed", 0) if isinstance(flow_results, dict) else 0),
+            integration_tests_total=flow_results.integration_tests_total if hasattr(flow_results, "integration_tests_total") else (flow_results.get("total", 0) if isinstance(flow_results, dict) else 0),
             violations=combined_violations,
             overall_health=compliance_report.overall_health,
         )
@@ -1417,14 +1420,31 @@ async def run_quality_gate(
 
     target_dir = Path(config.output_dir)
 
-    engine = QualityGateEngine()
-    report = await engine.run_all_layers(
-        builder_results=builder_results,
-        integration_report=integration_report,
-        target_dir=target_dir,
-        fix_attempts=state.quality_attempts,
-        max_fix_attempts=config.quality_gate.max_fix_retries,
-    )
+    # GATE-3: Provide Graph RAG client to quality gate if available
+    if config.graph_rag.enabled and state.phase_artifacts.get("graph_rag_contexts"):
+        try:
+            report = await _run_quality_gate_with_graph_rag(
+                config, builder_results, integration_report, target_dir, state,
+            )
+        except Exception as exc:
+            logger.warning("Graph RAG unavailable for quality gate: %s", exc)
+            engine = QualityGateEngine()
+            report = await engine.run_all_layers(
+                builder_results=builder_results,
+                integration_report=integration_report,
+                target_dir=target_dir,
+                fix_attempts=state.quality_attempts,
+                max_fix_attempts=config.quality_gate.max_fix_retries,
+            )
+    else:
+        engine = QualityGateEngine()
+        report = await engine.run_all_layers(
+            builder_results=builder_results,
+            integration_report=integration_report,
+            target_dir=target_dir,
+            fix_attempts=state.quality_attempts,
+            max_fix_attempts=config.quality_gate.max_fix_retries,
+        )
 
     # Persist results
     report_dict = dataclasses.asdict(report)
@@ -1470,6 +1490,52 @@ async def run_quality_gate(
     )
 
     return report
+
+
+async def _run_quality_gate_with_graph_rag(
+    config: SuperOrchestratorConfig,
+    builder_results: list,
+    integration_report: object,
+    target_dir: Path,
+    state: object,
+) -> object:
+    """Run quality gate with a live Graph RAG MCP client (GATE-3).
+
+    Creates a temporary MCP session to the Graph RAG server so that
+    Layer 4 (adversarial) can query cross-service events for ADV-001/ADV-002
+    false-positive suppression.
+    """
+    from mcp import StdioServerParameters, ClientSession
+    from mcp.client.stdio import stdio_client
+    from src.graph_rag.mcp_client import GraphRAGClient
+    from src.quality_gate.gate_engine import QualityGateEngine
+
+    graph_rag_config = config.graph_rag
+    env = {
+        "GRAPH_RAG_DB_PATH": graph_rag_config.database_path,
+        "GRAPH_RAG_CHROMA_PATH": graph_rag_config.chroma_path,
+        "CI_DATABASE_PATH": graph_rag_config.ci_database_path,
+        "ARCHITECT_DATABASE_PATH": graph_rag_config.architect_database_path,
+        "CONTRACT_DATABASE_PATH": graph_rag_config.contract_database_path,
+    }
+    server_params = StdioServerParameters(
+        command=graph_rag_config.mcp_command,
+        args=graph_rag_config.mcp_args,
+        env=env,
+    )
+    async with stdio_client(server_params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            client = GraphRAGClient(session)
+
+            engine = QualityGateEngine(graph_rag_client=client)
+            return await engine.run_all_layers(
+                builder_results=builder_results,
+                integration_report=integration_report,
+                target_dir=target_dir,
+                fix_attempts=state.quality_attempts,
+                max_fix_attempts=config.quality_gate.max_fix_retries,
+            )
 
 
 async def run_fix_pass(
@@ -1855,7 +1921,16 @@ async def _run_pipeline_loop(
         await handler(state, config, cost_tracker, shutdown, model)
 
         # Budget check after every phase
-        cost_tracker.check_budget()
+        within_budget, budget_msg = cost_tracker.check_budget()
+        if not within_budget:
+            from src.super_orchestrator.exceptions import BudgetExceededError
+
+            state.current_state = model.state
+            state.save()
+            raise BudgetExceededError(
+                total_cost=cost_tracker.total_cost,
+                budget_limit=cost_tracker.budget_limit or 0.0,
+            )
 
         # Sync model state back to pipeline state
         state.current_state = model.state
@@ -1937,6 +2012,21 @@ async def _phase_builders(
 ) -> None:
     """Handle contracts_registering → builders_running."""
     await run_contract_registration(state, config, cost_tracker, shutdown)
+
+    # Build Graph RAG context (non-blocking best-effort)
+    if config.graph_rag.enabled and state.service_map_path:
+        try:
+            service_map = load_json(state.service_map_path)
+            graph_rag_contexts = await _build_graph_rag_context(config, service_map)
+            if graph_rag_contexts:
+                state.phase_artifacts["graph_rag_contexts"] = graph_rag_contexts
+                logger.info(
+                    "Graph RAG context built for %d services",
+                    len(graph_rag_contexts),
+                )
+        except Exception as exc:
+            logger.warning("Graph RAG context build failed (non-fatal): %s", exc)
+
     state.save()
     await model.contracts_registered()  # type: ignore[attr-defined]
     state.current_state = model.state
@@ -1956,6 +2046,98 @@ async def _phase_builders_complete(
     await model.builders_done()  # type: ignore[attr-defined]
     state.current_state = model.state
     state.save()
+
+
+async def _build_graph_rag_context(
+    config: SuperOrchestratorConfig,
+    service_map: dict,
+) -> dict[str, str]:
+    """Build Graph RAG knowledge graph and fetch per-service context blocks.
+
+    Returns dict mapping service_name -> context_text. Empty dict on any failure.
+    """
+    if not config.graph_rag.enabled:
+        return {}
+    try:
+        import json as _json
+        from mcp import StdioServerParameters, ClientSession
+        from mcp.client.stdio import stdio_client
+
+        graph_rag_config = config.graph_rag
+        env = {
+            "GRAPH_RAG_DB_PATH": graph_rag_config.database_path,
+            "GRAPH_RAG_CHROMA_PATH": graph_rag_config.chroma_path,
+            "CI_DATABASE_PATH": graph_rag_config.ci_database_path,
+            "ARCHITECT_DATABASE_PATH": graph_rag_config.architect_database_path,
+            "CONTRACT_DATABASE_PATH": graph_rag_config.contract_database_path,
+        }
+        server_params = StdioServerParameters(
+            command=graph_rag_config.mcp_command,
+            args=graph_rag_config.mcp_args,
+            env=env,
+        )
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                from src.graph_rag.mcp_client import GraphRAGClient
+                client = GraphRAGClient(session)
+
+                # INT-2: Pre-fetch service interfaces via CI MCP
+                service_interfaces_json = ""
+                try:
+                    from src.codebase_intelligence.mcp_client import CodebaseIntelligenceClient
+                    ci_client = CodebaseIntelligenceClient()
+                    interfaces: dict[str, object] = {}
+                    services_data = service_map.get("services", {})
+                    if isinstance(services_data, list):
+                        svc_names = [
+                            s.get("name", "") if isinstance(s, dict) else str(s)
+                            for s in services_data
+                        ]
+                    else:
+                        svc_names = list(services_data.keys())
+                    for svc in svc_names:
+                        if not svc:
+                            continue
+                        try:
+                            iface = await ci_client.get_service_interface(svc)
+                            if iface and "error" not in iface:
+                                interfaces[svc] = iface
+                        except Exception:
+                            pass
+                    if interfaces:
+                        import json as _json2
+                        service_interfaces_json = _json2.dumps(interfaces)
+                except (ImportError, Exception) as exc:
+                    logger.debug("CI MCP not available for interface pre-fetch: %s", exc)
+
+                # Build knowledge graph
+                await client.build_knowledge_graph(
+                    service_interfaces_json=service_interfaces_json,
+                )
+
+                # Fetch context for each service
+                contexts: dict[str, str] = {}
+                services = service_map.get("services", {})
+                if isinstance(services, list):
+                    service_names = [
+                        s.get("name", "") if isinstance(s, dict) else str(s)
+                        for s in services
+                    ]
+                else:
+                    service_names = list(services.keys())
+
+                for svc_name in service_names:
+                    if not svc_name:
+                        continue
+                    result = await client.get_service_context(svc_name)
+                    contexts[svc_name] = result.get("context_text", "")
+                return contexts
+    except Exception as e:
+        logging.getLogger(__name__).warning(
+            "Graph RAG context build failed (non-blocking): %s", e
+        )
+        return {}
 
 
 async def _index_generated_code(

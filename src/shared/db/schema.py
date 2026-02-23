@@ -236,3 +236,20 @@ def init_symbols_db(pool: ConnectionPool) -> None:
         );
     """)
     conn.commit()
+
+
+def init_graph_rag_db(pool: ConnectionPool) -> None:
+    """Initialize the Graph RAG database schema."""
+    conn = pool.get()
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS graph_rag_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_data TEXT NOT NULL,
+            node_count INTEGER NOT NULL,
+            edge_count INTEGER NOT NULL,
+            community_count INTEGER NOT NULL,
+            services_indexed TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+    """)
+    conn.commit()

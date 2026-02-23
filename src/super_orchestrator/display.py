@@ -334,10 +334,13 @@ def print_final_summary(state: Any, tracker: Any = None, cost_tracker: Any = Non
 
     # Cost info
     total_cost = _get_attr(state, "total_cost", 0.0)
-    budget = _get_attr(state, "budget_limit", 50.0)
+    budget = _get_attr(state, "budget_limit", None)
     content.append(f"\nTotal Cost: ", style="bold")
     content.append(f"${total_cost:.4f}", style="cyan")
-    content.append(f" / ${budget:.2f}\n")
+    if budget is not None:
+        content.append(f" / ${budget:.2f}\n")
+    else:
+        content.append(" / no limit\n")
 
     if cost_tracker is not None:
         phase_costs = getattr(cost_tracker, "phase_costs", {})

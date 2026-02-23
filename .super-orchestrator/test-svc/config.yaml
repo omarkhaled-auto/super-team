@@ -1,9 +1,0 @@
-depth: thorough
-milestone: build-test-svc
-e2e_testing: true
-post_orchestration_scans: true
-service_id: test-svc
-domain: test
-stack: {}
-port: 8080
-output_dir: .super-orchestrator\test-svc

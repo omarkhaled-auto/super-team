@@ -52,6 +52,23 @@ class QualityGateConfig:
 
 
 @dataclass
+class GraphRAGConfig:
+    """Configuration for the Graph RAG module."""
+    enabled: bool = True
+    mcp_command: str = "python"
+    mcp_args: list[str] = field(default_factory=lambda: ["-m", "src.graph_rag.mcp_server"])
+    database_path: str = "./data/graph_rag.db"
+    chroma_path: str = "./data/graph_rag_chroma"
+    ci_database_path: str = "./data/codebase_intel.db"
+    architect_database_path: str = "./data/architect.db"
+    contract_database_path: str = "./data/contracts.db"
+    context_token_budget: int = 2000
+    semantic_weight: float = 0.6
+    graph_weight: float = 0.4
+    startup_timeout_ms: int = 30000
+
+
+@dataclass
 class SuperOrchestratorConfig:
     """Top-level configuration composing all sub-configs."""
 
@@ -59,6 +76,7 @@ class SuperOrchestratorConfig:
     builder: BuilderConfig = field(default_factory=BuilderConfig)
     integration: IntegrationConfig = field(default_factory=IntegrationConfig)
     quality_gate: QualityGateConfig = field(default_factory=QualityGateConfig)
+    graph_rag: GraphRAGConfig = field(default_factory=GraphRAGConfig)
     budget_limit: float | None = None
     depth: str = "standard"
     phase_timeouts: dict[str, int] = field(default_factory=dict)
@@ -100,10 +118,11 @@ def load_super_config(path: Path | str | None = None) -> SuperOrchestratorConfig
     builder_raw = raw.get("builder", {})
     integration_raw = raw.get("integration", {})
     quality_gate_raw = raw.get("quality_gate", {})
+    graph_rag_raw = raw.get("graph_rag", {})
 
     top_level = _pick(raw, SuperOrchestratorConfig)
     # Remove sub-config keys that need special handling
-    for key in ("architect", "builder", "integration", "quality_gate"):
+    for key in ("architect", "builder", "integration", "quality_gate", "graph_rag"):
         top_level.pop(key, None)
 
     return SuperOrchestratorConfig(
@@ -111,5 +130,6 @@ def load_super_config(path: Path | str | None = None) -> SuperOrchestratorConfig
         builder=BuilderConfig(**_pick(builder_raw, BuilderConfig)),
         integration=IntegrationConfig(**_pick(integration_raw, IntegrationConfig)),
         quality_gate=QualityGateConfig(**_pick(quality_gate_raw, QualityGateConfig)),
+        graph_rag=GraphRAGConfig(**_pick(graph_rag_raw, GraphRAGConfig)),
         **top_level,
     )
