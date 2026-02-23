@@ -528,10 +528,10 @@ class TestRTMMapsAllRequirements:
 class TestBuildInterfaceMatrix:
     """Test MCP interface coverage matrix."""
 
-    def test_20_tools_listed(self) -> None:
-        """Interface matrix should have 20 MCP tool entries."""
+    def test_22_tools_listed(self) -> None:
+        """Interface matrix should have 22 MCP tool entries."""
         matrix = build_interface_matrix({})
-        assert len(matrix) == 20
+        assert len(matrix) == 22
 
     def test_tool_columns(self) -> None:
         """Each entry should have valid/error/response columns."""

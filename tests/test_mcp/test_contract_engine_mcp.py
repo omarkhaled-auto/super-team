@@ -312,8 +312,7 @@ class TestMarkImplementation:
         assert "error" not in result
         assert "marked" in result
         assert result["marked"] is True
-        # SVC-005: mark_implemented returns {marked, total, all_implemented}
-        assert "total" in result
+        assert "total_implementations" in result
         assert "all_implemented" in result
 
     def test_mark_implementation_nonexistent_contract(self, contract_mcp):

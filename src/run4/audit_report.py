@@ -725,14 +725,14 @@ def build_rtm(
 # REQ-039 — Interface Coverage Matrix
 # ---------------------------------------------------------------------------
 
-# All 20 MCP tools across 3 servers
+# All 22 MCP tools across 3 servers
 _MCP_TOOLS = [
     # Architect (4 tools)
     "decompose",
     "get_service_map",
     "get_contracts_for_service",
     "get_domain_model",
-    # Contract Engine (9 tools)
+    # Contract Engine (10 tools)
     "create_contract",
     "validate_spec",
     "list_contracts",
@@ -742,7 +742,8 @@ _MCP_TOOLS = [
     "check_breaking_changes",
     "mark_implemented",
     "get_unimplemented_contracts",
-    # Codebase Intelligence (7 tools)
+    "check_compliance",
+    # Codebase Intelligence (8 tools)
     "find_definition",
     "find_callers",
     "find_dependencies",
@@ -750,6 +751,7 @@ _MCP_TOOLS = [
     "get_service_interface",
     "check_dead_code",
     "register_artifact",
+    "analyze_graph",
 ]
 
 
@@ -758,7 +760,7 @@ def build_interface_matrix(
 ) -> list[dict]:
     """Build the MCP Interface Coverage Matrix.
 
-    For each of 20 MCP tools, reports:
+    For each of 22 MCP tools, reports:
     - valid request tested (Y/N)
     - error request tested (Y/N)
     - response parseable (Y/N)

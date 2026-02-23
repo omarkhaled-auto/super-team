@@ -269,11 +269,7 @@ def mark_implementation(
         result = _implementation_tracker.mark_implemented(
             contract_id, service_name, evidence_path
         )
-        return {
-            "marked": result.marked,
-            "total": result.total_implementations,
-            "all_implemented": result.all_implemented,
-        }
+        return result.model_dump(mode="json")
     except ContractNotFoundError as exc:
         return {"error": str(exc)}
     except AppError as exc:

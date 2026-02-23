@@ -39,7 +39,7 @@ services:
         condition: service_healthy
       contract-engine:
         condition: service_healthy
-      codebase-intelligence:
+      codebase-intel:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "traefik", "healthcheck"]

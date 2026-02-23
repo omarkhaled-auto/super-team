@@ -48,7 +48,7 @@ CONTRACT_ENGINE_TOOLS = {
     "check_breaking_changes",
     "mark_implemented",
     "get_unimplemented_contracts",
-    # Note: actual server also exposes check_compliance (10 total)
+    "check_compliance",
 }
 
 CODEBASE_INTEL_TOOLS = {
@@ -59,7 +59,7 @@ CODEBASE_INTEL_TOOLS = {
     "get_service_interface",
     "check_dead_code",
     "register_artifact",
-    # Note: actual server also exposes analyze_graph (8 total)
+    "analyze_graph",
 }
 
 
@@ -150,14 +150,14 @@ class TestContractEngineMCPHandshake:
     async def test_contract_engine_mcp_handshake(
         self, contract_engine_params: dict
     ) -> None:
-        """Verify CE MCP session initializes and exposes >= 9 tools."""
+        """Verify CE MCP session initializes and exposes >= 10 tools."""
         session = _build_contract_engine_session()
 
         await session.initialize()
         tools_resp = await session.list_tools()
 
         tool_names = {t.name for t in tools_resp.tools}
-        assert len(tool_names) >= 9, f"Expected >= 9 tools, got {len(tool_names)}"
+        assert len(tool_names) >= 10, f"Expected >= 10 tools, got {len(tool_names)}"
         assert CONTRACT_ENGINE_TOOLS.issubset(tool_names), (
             f"Missing CE tools: {CONTRACT_ENGINE_TOOLS - tool_names}"
         )
@@ -186,14 +186,14 @@ class TestCodebaseIntelMCPHandshake:
     async def test_codebase_intel_mcp_handshake(
         self, codebase_intel_params: dict
     ) -> None:
-        """Verify CI MCP session initializes and exposes >= 7 tools."""
+        """Verify CI MCP session initializes and exposes >= 8 tools."""
         session = _build_codebase_intel_session()
 
         await session.initialize()
         tools_resp = await session.list_tools()
 
         tool_names = {t.name for t in tools_resp.tools}
-        assert len(tool_names) >= 7, f"Expected >= 7 tools, got {len(tool_names)}"
+        assert len(tool_names) >= 8, f"Expected >= 8 tools, got {len(tool_names)}"
         assert CODEBASE_INTEL_TOOLS.issubset(tool_names), (
             f"Missing CI tools: {CODEBASE_INTEL_TOOLS - tool_names}"
         )
@@ -581,7 +581,7 @@ class TestAllToolsInvalidParams:
         "get_service_map": {"project_name": [1, 2, 3]},     # expects str|None
         "get_contracts_for_service": {"service_name": 999},  # expects str
         "get_domain_model": {"project_name": {"bad": True}}, # expects str|None
-        # -- Contract Engine tools (9) --
+        # -- Contract Engine tools (10) --
         "create_contract": {"service_name": 0, "type": 0, "version": 0, "spec": "not-a-dict"},
         "validate_spec": {"spec": "not-a-dict", "type": 123},
         "list_contracts": {"page": "not-int", "page_size": "not-int"},
@@ -596,7 +596,8 @@ class TestAllToolsInvalidParams:
             "contract_id": 0, "service_name": 0, "evidence_path": 0,
         },
         "get_unimplemented_contracts": {"service_name": 12345},
-        # -- Codebase Intelligence tools (7) --
+        "check_compliance": {"contract_id": 12345},              # expects str
+        # -- Codebase Intelligence tools (8) --
         "find_definition": {"symbol": 999, "language": 0},
         "find_callers": {"symbol": True, "max_results": "bad"},
         "find_dependencies": {"file_path": 42, "depth": "bad"},
@@ -604,6 +605,7 @@ class TestAllToolsInvalidParams:
         "get_service_interface": {"service_name": 0},
         "check_dead_code": {"service_name": [1, 2]},
         "register_artifact": {"file_path": 123, "service_name": 456},
+        "analyze_graph": {"unexpected_param": True},              # takes no args
     }
 
     @staticmethod
@@ -1636,10 +1638,10 @@ class TestMCPToolLatencyBenchmark:
                     f"suspiciously fast — expected ≥{min_s * 500:.0f}ms"
                 )
 
-        # Compute and verify aggregate stats across all 20 tools
+        # Compute and verify aggregate stats across all 22 tools
         values = sorted(latencies.values())
         n = len(values)
-        assert n == 20, f"Expected 20 tool measurements, got {n}"
+        assert n == 22, f"Expected 22 tool measurements, got {n}"
         median = values[n // 2]
         p95_idx = int(n * 0.95)
         p99_idx = int(n * 0.99)

@@ -341,9 +341,11 @@ class TestSVC004CheckBreakingChanges:
 
 
 class TestSVC005MarkImplemented:
-    """SVC-005: mark_implemented returns {marked: bool, total: int, all_implemented: bool}.
+    """SVC-005 FIXED: mark_implemented now uses model_dump() and returns
+    {marked: bool, total_implementations: int, all_implemented: bool}.
 
-    IMPORTANT: The key is 'total', NOT 'total_implementations'.
+    The key is 'total_implementations' (matching the MarkResponse model).
+    The old 'total' key was a bug that has been corrected.
     """
 
     def test_response_shape(self, contract_mcp):
@@ -357,7 +359,7 @@ class TestSVC005MarkImplemented:
         assert isinstance(result, dict)
         assert "error" not in result
 
-        required_keys = {"marked", "total", "all_implemented"}
+        required_keys = {"marked", "total_implementations", "all_implemented"}
         missing = required_keys - set(result.keys())
         assert not missing, f"SVC-005 missing keys: {missing}"
 
@@ -370,11 +372,11 @@ class TestSVC005MarkImplemented:
         )
 
         assert isinstance(result["marked"], bool)
-        assert isinstance(result["total"], int)
+        assert isinstance(result["total_implementations"], int)
         assert isinstance(result["all_implemented"], bool)
 
-    def test_no_total_implementations_key(self, contract_mcp):
-        """Build 2 expects 'total', NEVER 'total_implementations'."""
+    def test_total_implementations_key_present(self, contract_mcp):
+        """SVC-005 FIXED: model_dump() produces 'total_implementations'."""
         created = _create_contract(contract_mcp)
         result = contract_mcp.mark_implementation(
             contract_id=created["id"],
@@ -382,9 +384,9 @@ class TestSVC005MarkImplemented:
             evidence_path="/tests/test_api.py",
         )
 
-        assert "total_implementations" not in result, (
-            "SVC-005 VIOLATION: Found 'total_implementations' key -- "
-            "Build 2 expects 'total'"
+        assert "total_implementations" in result, (
+            "SVC-005 REGRESSION: 'total_implementations' key must be present "
+            "(using model_dump)."
         )
 
 

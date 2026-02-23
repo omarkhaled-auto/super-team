@@ -107,6 +107,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
     yield
 
+    try:
+        graph_db.save_snapshot(graph_builder.graph)
+        logger.info(
+            "Graph snapshot saved: nodes=%d edges=%d",
+            graph_builder.graph.number_of_nodes(),
+            graph_builder.graph.number_of_edges(),
+        )
+    except Exception:
+        logger.exception("Failed to save graph snapshot on shutdown")
+
     pool.close()
     logger.info("Service stopped: name=%s", CODEBASE_INTEL_SERVICE_NAME)
 

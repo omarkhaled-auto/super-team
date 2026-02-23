@@ -47,7 +47,7 @@ services:
       - "traefik.http.routers.contract-engine.entrypoints=web"
       - "traefik.http.services.contract-engine.loadbalancer.server.port=8000"
 
-  codebase-intelligence:
+  codebase-intel:
     networks:
       - frontend
       - backend
