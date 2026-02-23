@@ -312,6 +312,7 @@ def write_fix_instructions(
     violations: list[dict[str, Any]],
     priority_order: list[str] | None = None,
     graph_rag_context: str = "",
+    fix_context: str = "",
 ) -> Path:
     """Generate ``FIX_INSTRUCTIONS.md`` with categorized violations.
 
@@ -327,6 +328,8 @@ def write_fix_instructions(
         priority_order: Priority tiers to emit, in order.
         graph_rag_context: Optional cross-service dependency context from
             Graph RAG to append to the instructions.
+        fix_context: Optional fix examples from prior runs (from
+            ``build_fix_context``).  Appended after violations.
 
     Returns:
         Path to the written ``FIX_INSTRUCTIONS.md``.
@@ -375,6 +378,9 @@ def write_fix_instructions(
         lines.append("The following context describes how other services depend on this one.")
         lines.append("Consider cross-service impact when applying fixes.\n")
         lines.append(graph_rag_context)
+
+    if fix_context:
+        lines.append(fix_context)
 
     instructions_path = cwd / "FIX_INSTRUCTIONS.md"
     instructions_path.write_text("\n".join(lines), encoding="utf-8")

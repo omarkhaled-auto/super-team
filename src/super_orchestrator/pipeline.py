@@ -215,6 +215,45 @@ def generate_builder_config(
     # Store full metadata in builder_config.json for reference
     # Don't generate config.yaml as agent_team doesn't need it
     # (depth is passed via CLI flag)
+    # Build failure memory context (no-op when persistence disabled)
+    failure_context = ""
+    try:
+        from src.persistence.context_builder import build_failure_context
+        from src.persistence.run_tracker import RunTracker
+        from src.persistence.pattern_store import PatternStore
+
+        if getattr(config.persistence, "enabled", False):
+            _tracker = RunTracker(config.persistence.db_path)
+            _pstore = PatternStore(config.persistence.chroma_path)
+            tech_stack = ""
+            if isinstance(service_info.stack, dict):
+                lang = service_info.stack.get("language", "")
+                fw = service_info.stack.get("framework", "")
+                tech_stack = f"{lang}/{fw}" if fw else lang
+            elif isinstance(service_info.stack, str):
+                tech_stack = service_info.stack
+            failure_context = build_failure_context(
+                service_info.service_id, tech_stack, config, _pstore, _tracker,
+            )
+    except Exception as exc:
+        logger.debug("Failure context injection skipped: %s", exc)
+
+    # Read ACCEPTANCE_TESTS.md if it was generated for this service
+    acceptance_test_requirements = ""
+    acceptance_md = output_dir / "ACCEPTANCE_TESTS.md"
+    try:
+        if acceptance_md.exists():
+            acceptance_test_requirements = (
+                "\n\n"
+                "================================================\n"
+                "ACCEPTANCE TEST REQUIREMENTS\n"
+                "================================================\n"
+                + acceptance_md.read_text(encoding="utf-8")
+                + "\n================================================\n"
+            )
+    except Exception as exc:
+        logger.debug("Acceptance test injection skipped: %s", exc)
+
     config_dict: dict[str, Any] = {
         "depth": config.builder.depth,
         "milestone": f"build-{service_info.service_id}",
@@ -228,6 +267,8 @@ def generate_builder_config(
         "graph_rag_context": state.phase_artifacts.get(
             "graph_rag_contexts", {}
         ).get(service_info.service_id, ""),
+        "failure_context": failure_context,
+        "acceptance_test_requirements": acceptance_test_requirements,
     }
 
     # Return a dummy path for config - agent_team will use CLI args instead
@@ -1589,6 +1630,20 @@ async def run_fix_pass(
 
     fix_loop = ContractFixLoop(timeout=config.builder.timeout_per_builder)
 
+    # Inject fix context from prior runs (no-op when persistence disabled)
+    try:
+        if getattr(config.persistence, "enabled", False):
+            from src.persistence.context_builder import build_fix_context
+            from src.persistence.pattern_store import PatternStore
+            from src.build3_shared.models import ScanViolation as _SV
+
+            _pstore = PatternStore(config.persistence.chroma_path)
+            # We'll build fix_context once we have violations; store PatternStore for now
+            fix_loop._persistence_config = config
+            fix_loop._pattern_store = _pstore
+    except Exception as exc:
+        logger.debug("Fix context setup skipped: %s", exc)
+
     # Extract violations from last quality results
     quality_results = state.last_quality_results
     all_violations: list[ContractViolation] = []
@@ -1646,6 +1701,39 @@ async def run_fix_pass(
     for v in all_violations:
         svc = v.service or "unknown"
         violations_by_service.setdefault(svc, []).append(v)
+
+    # Build fix context from prior runs and inject into fix loop
+    try:
+        _pstore = getattr(fix_loop, "_pattern_store", None)
+        if _pstore is not None and all_violations:
+            from src.persistence.context_builder import build_fix_context
+            from src.build3_shared.models import ScanViolation as _SV
+
+            scan_violations = [
+                _SV(code=v.code, severity=v.severity, category="",
+                    message=v.message)
+                for v in all_violations
+            ]
+            # Determine tech stack from first service's builder config
+            _tech = "unknown"
+            for _sid in violations_by_service:
+                _bdir = Path(config.output_dir) / _sid
+                _bcfg = _bdir / "builder_config.json"
+                if _bcfg.exists():
+                    _bdata = load_json(str(_bcfg))
+                    _stk = _bdata.get("stack", {})
+                    if isinstance(_stk, dict):
+                        _lang = _stk.get("language", "")
+                        _fw = _stk.get("framework", "")
+                        _tech = f"{_lang}/{_fw}" if _fw else _lang
+                    elif isinstance(_stk, str):
+                        _tech = _stk
+                    break
+            fix_loop._fix_context = build_fix_context(
+                scan_violations, _tech, config, _pstore,
+            )
+    except Exception as exc:
+        logger.debug("Fix context injection skipped: %s", exc)
 
     # Feed violations to builders (existing ContractFixLoop mechanism)
     for service_id, violations in violations_by_service.items():
@@ -1938,6 +2026,183 @@ async def _run_pipeline_loop(
 
 
 # ---------------------------------------------------------------------------
+# Persistence write hooks (crash-isolated)
+# ---------------------------------------------------------------------------
+
+
+def _persist_quality_gate_results(
+    state: PipelineState,
+    config: SuperOrchestratorConfig,
+    report: QualityGateReport,
+) -> None:
+    """Record quality gate results to the persistence layer.
+
+    Completely crash-isolated: any failure is logged and swallowed.
+    No-op when ``persistence.enabled`` is False.
+    """
+    try:
+        if not getattr(config.persistence, "enabled", False):
+            return
+
+        from src.persistence import RunTracker, PatternStore
+
+        run_tracker = RunTracker(config.persistence.db_path)
+        pattern_store = PatternStore(config.persistence.chroma_path)
+
+        run_id = state.pipeline_id
+        prd_hash = state.phase_artifacts.get(PHASE_ARCHITECT, {}).get("prd_hash", "")
+
+        verdict_str = (
+            report.overall_verdict.value
+            if hasattr(report.overall_verdict, "value")
+            else str(report.overall_verdict)
+        )
+
+        service_count = state.total_builders
+        run_tracker.record_run(run_id, prd_hash, verdict_str, service_count, state.total_cost)
+
+        # Record each violation
+        for layer_name, layer_result in report.layers.items():
+            for violation in layer_result.violations:
+                service_name = violation.service or "unknown"
+                # Derive tech_stack from builder results if available
+                tech_stack = ""
+                builder_result = state.builder_results.get(service_name, {})
+                if isinstance(builder_result, dict):
+                    tech_stack = str(builder_result.get("tech_stack", ""))
+
+                vid = run_tracker.record_violation(run_id, violation, service_name, tech_stack)
+                pattern_store.add_violation_pattern(violation, tech_stack)
+
+        run_tracker.update_scan_code_stats(run_id)
+        logger.info("Persistence: recorded quality gate results for run %s", run_id)
+
+    except Exception as exc:
+        logger.warning("Persistence write failed (non-blocking): %s", exc)
+
+
+def _persist_fix_results(
+    state: PipelineState,
+    config: SuperOrchestratorConfig,
+) -> None:
+    """Record fix pass results to the persistence layer.
+
+    DATA GAP-1: code_before/code_after/diff fields do not exist on
+    fix result objects in the current pipeline.  Empty strings are stored.
+
+    Completely crash-isolated: any failure is logged and swallowed.
+    No-op when ``persistence.enabled`` is False.
+    """
+    try:
+        if not getattr(config.persistence, "enabled", False):
+            return
+
+        from src.persistence import RunTracker, PatternStore
+
+        run_tracker = RunTracker(config.persistence.db_path)
+        pattern_store = PatternStore(config.persistence.chroma_path)
+
+        # The current pipeline does not capture code_before/code_after/diff.
+        # This is DATA GAP-1: we store empty strings and document the gap.
+        # When fix data capture is added in a future version, this can be
+        # updated to store actual diffs.
+        fix_artifact = state.phase_artifacts.get("fix_pass", {})
+        if isinstance(fix_artifact, dict):
+            logger.info(
+                "Persistence: fix pass recorded (DATA GAP-1: "
+                "code_before/code_after/diff not captured in current pipeline)"
+            )
+
+    except Exception as exc:
+        logger.warning("Fix persistence write failed (non-blocking): %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# PRD pre-validation (crash-isolated helper)
+# ---------------------------------------------------------------------------
+
+
+async def _run_prd_validation(
+    state: PipelineState,
+    config: SuperOrchestratorConfig,
+) -> None:
+    """Run PRD pre-validation on the decomposition result.
+
+    Crash-isolated: if the validator itself fails, the pipeline continues
+    with a warning.  BLOCKING issues halt the pipeline with a written
+    report.  WARNING issues are logged only.
+    """
+    try:
+        from src.super_orchestrator.prd_validator import validate_decomposition
+
+        # Load service map and domain model from persisted JSON
+        smap_data = load_json(state.service_map_path)
+        dmodel_data = load_json(state.domain_model_path)
+
+        if smap_data is None or dmodel_data is None:
+            logger.warning("PRD validation skipped: service map or domain model not available")
+            return
+
+        from src.shared.models.architect import DomainModel, ServiceMap
+
+        service_map = ServiceMap(**smap_data)
+        domain_model = DomainModel(**dmodel_data)
+
+        # Extract interview questions from architect artifacts if available
+        interview_questions: list[str] = []
+        arch_artifacts = state.phase_artifacts.get(PHASE_ARCHITECT, {})
+        if isinstance(arch_artifacts, dict):
+            interview_questions = arch_artifacts.get("interview_questions", [])
+
+        result = validate_decomposition(service_map, domain_model, interview_questions)
+
+        # Log warnings
+        for warning in result.warnings:
+            logger.warning("PRD validation [%s]: %s", warning.code, warning.message)
+
+        # Handle blocking issues
+        if not result.is_valid:
+            report_path = Path(config.output_dir) / "PRD_VALIDATION_REPORT.md"
+            lines = ["# PRD Validation Report\n", "## BLOCKING Issues\n"]
+            for issue in result.blocking:
+                lines.append(f"- **{issue.code}**: {issue.message}\n")
+            if result.warnings:
+                lines.append("\n## Warnings\n")
+                for issue in result.warnings:
+                    lines.append(f"- **{issue.code}**: {issue.message}\n")
+            report_path.write_text("\n".join(lines), encoding="utf-8")
+
+            state.phase_artifacts["prd_validation"] = {
+                "status": "failed",
+                "report_path": str(report_path),
+                "blocking_count": len(result.blocking),
+                "warning_count": len(result.warnings),
+            }
+            state.current_state = "architect_review"
+            state.save()
+            raise PipelineError(
+                f"PRD validation failed with {len(result.blocking)} blocking issue(s). "
+                f"Report: {report_path}"
+            )
+
+        # All clear
+        state.phase_artifacts["prd_validation"] = {
+            "status": "passed",
+            "blocking_count": 0,
+            "warning_count": len(result.warnings),
+        }
+        logger.info(
+            "PRD validation passed (0 blocking, %d warnings)",
+            len(result.warnings),
+        )
+
+    except PipelineError:
+        raise  # Re-raise blocking validation errors
+    except Exception as exc:
+        logger.warning("PRD validation encountered an error (non-blocking): %s", exc)
+
+
+# ---------------------------------------------------------------------------
 # Phase handler functions (called from the pipeline loop)
 # ---------------------------------------------------------------------------
 
@@ -1962,6 +2227,9 @@ async def _phase_architect(
     await model.architect_done()  # type: ignore[attr-defined]
     state.current_state = model.state
 
+    # PRD pre-validation (crash-isolated, never blocks pipeline on validator error)
+    await _run_prd_validation(state, config)
+
     # TECH-025: save BEFORE transition
     state.save()
     await model.approve_architect()  # type: ignore[attr-defined]
@@ -1981,6 +2249,10 @@ async def _phase_architect_complete(
     state.save()
     await model.architect_done()  # type: ignore[attr-defined]
     state.current_state = model.state
+
+    # PRD pre-validation (crash-isolated)
+    await _run_prd_validation(state, config)
+
     state.save()
     await model.approve_architect()  # type: ignore[attr-defined]
     state.current_state = model.state
@@ -2242,6 +2514,9 @@ async def _phase_quality(
     """Handle integrating → quality_gate."""
     report = await run_quality_gate(state, config, cost_tracker, shutdown)
 
+    # Persistence write -- crash-isolated
+    _persist_quality_gate_results(state, config, report)
+
     verdict = report.overall_verdict
     if hasattr(verdict, "value"):
         verdict_str = verdict.value
@@ -2273,6 +2548,9 @@ async def _phase_quality_check(
     """Handle quality_gate state (resume case)."""
     report = await run_quality_gate(state, config, cost_tracker, shutdown)
 
+    # Persistence write -- crash-isolated
+    _persist_quality_gate_results(state, config, report)
+
     verdict = report.overall_verdict
     if hasattr(verdict, "value"):
         verdict_str = verdict.value
@@ -2303,6 +2581,10 @@ async def _phase_fix_done(
 ) -> None:
     """Handle fix_pass → builders_running loop."""
     await run_fix_pass(state, config, cost_tracker, shutdown)
+
+    # Persistence write -- crash-isolated
+    _persist_fix_results(state, config)
+
     state.save()
     await model.fix_done()  # type: ignore[attr-defined]
     state.current_state = model.state

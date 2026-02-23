@@ -1,1047 +1,826 @@
-# Architecture Report: Build 1 Verification (Phase 1)
+# Architecture Report: Persistent Intelligence Layer Discovery
 
-> **Report Type:** Discovery Agent Output
+> **Report Type:** Discovery Agent Output (Phases 1A-1H)
 > **Generated:** 2026-02-23
-> **Scope:** Build 1 Foundation Services + Shared Modules + Docker Infrastructure + Test Infrastructure
+> **Scope:** Data lifecycle, storage infrastructure, architect decomposition, contract engine, quality gate scanners, MCP servers, config/depth-gating, test infrastructure
 > **Status:** READ ONLY -- No source files modified
 
 ---
 
 ## Table of Contents
 
-- [Section 1A: Service Structure and Entry Points](#section-1a-service-structure-and-entry-points)
-- [Section 1B: Docker Infrastructure](#section-1b-docker-infrastructure)
-- [Section 1C: Test Infrastructure](#section-1c-test-infrastructure)
-- [Section 1D: Known Integration Points](#section-1d-known-integration-points)
-- [Section 1E: Known API Mismatches Verification](#section-1e-known-api-mismatches-verification)
+- [Phase 1A: Data Lifecycle](#phase-1a-data-lifecycle)
+- [Phase 1B: Storage Infrastructure](#phase-1b-storage-infrastructure)
+- [Phase 1C: Architect Decomposition Pipeline](#phase-1c-architect-decomposition-pipeline)
+- [Phase 1D: Contract Engine](#phase-1d-contract-engine)
+- [Phase 1E: Quality Gate Scanners](#phase-1e-quality-gate-scanners)
+- [Phase 1F: MCP Server Patterns](#phase-1f-mcp-server-patterns)
+- [Phase 1G: Config and Depth-Gating](#phase-1g-config-and-depth-gating)
+- [Phase 1H: Test Infrastructure](#phase-1h-test-infrastructure)
+- [DATA GAP Summary](#data-gap-summary)
 
 ---
 
-## Section 1A: Service Structure and Entry Points
+## Phase 1A: Data Lifecycle
 
-### 1A.1 Project Configuration
+### 1A.1 Pipeline State Machine
 
-**File:** `pyproject.toml`
+**File:** `src/super_orchestrator/pipeline.py` (lines 1-77)
 
-| Property | Value |
+The pipeline is state-machine-driven with the following phase sequence:
+
+```
+architect -> contract_registration -> builders -> integration
+-> quality_gate -> (fix_pass loop) -> complete
+```
+
+Phase names are defined in `src/build3_shared/constants.py` (lines 8-16):
+
+| Constant | Value |
 |----------|-------|
-| Project Name | `super-team` |
-| Version | `1.0.0` |
-| Python | `>=3.11` (ruff/mypy target `3.12`) |
-| FastAPI | `0.129.0` |
-| tree-sitter | `0.25.2` |
-| chromadb | `1.5.0` |
-| networkx | `3.6.1` |
-| mcp | `>=1.25,<2` |
-| schemathesis | `4.10.1` |
+| `PHASE_ARCHITECT` | `"architect"` |
+| `PHASE_ARCHITECT_REVIEW` | `"architect_review"` |
+| `PHASE_CONTRACT_REGISTRATION` | `"contract_registration"` |
+| `PHASE_BUILDERS` | `"builders"` |
+| `PHASE_INTEGRATION` | `"integration"` |
+| `PHASE_QUALITY_GATE` | `"quality_gate"` |
+| `PHASE_FIX_PASS` | `"fix_pass"` |
+| `PHASE_COMPLETE` | `"complete"` |
+| `PHASE_FAILED` | `"failed"` |
 
-**Test Configuration:**
+Phase timeouts (`src/build3_shared/constants.py`, lines 31-39):
+
+| Phase | Timeout (seconds) |
+|-------|-------------------|
+| architect | 900 |
+| architect_review | 300 |
+| contract_registration | 180 |
+| builders | 3600 |
+| integration | 600 |
+| quality_gate | 600 |
+| fix_pass | 900 |
+
+### 1A.2 PipelineState Persistence
+
+**File:** `src/super_orchestrator/state.py` (126 lines)
+
+`PipelineState` is a dataclass with ~30 fields persisted to `PIPELINE_STATE.json` via atomic writes.
+
+**Fields that survive pipeline restarts (persisted to disk):**
+
+| Field | Type | Default | Purpose |
+|-------|------|---------|---------|
+| `pipeline_id` | `str` | `uuid4()` | Unique pipeline run ID |
+| `prd_path` | `str` | `""` | Path to PRD input file |
+| `config_path` | `str` | `""` | Path to config YAML |
+| `depth` | `str` | `"thorough"` | Pipeline depth |
+| `current_state` | `str` | `"init"` | Current state machine state |
+| `previous_state` | `str` | `""` | Previous state |
+| `completed_phases` | `list[str]` | `[]` | Phases completed so far |
+| `phase_artifacts` | `dict[str, Any]` | `{}` | Artifacts produced per phase |
+| `architect_retries` | `int` | `0` | Architect retry counter |
+| `service_map_path` | `str` | `""` | Path to service_map.json |
+| `contract_registry_path` | `str` | `""` | Path to contracts dir |
+| `domain_model_path` | `str` | `""` | Path to domain_model.json |
+| `builder_statuses` | `dict[str, str]` | `{}` | Per-builder status |
+| `builder_costs` | `dict[str, float]` | `{}` | Per-builder cost |
+| `builder_results` | `dict[str, dict]` | `{}` | Per-builder result dicts |
+| `total_builders` | `int` | `0` | Total builder count |
+| `successful_builders` | `int` | `0` | Successful builder count |
+| `services_deployed` | `list[str]` | `[]` | Services deployed |
+| `integration_report_path` | `str` | `""` | Path to integration report |
+| `quality_attempts` | `int` | `0` | Quality gate attempts |
+| `last_quality_results` | `dict[str, Any]` | `{}` | Last QG results |
+| `quality_report_path` | `str` | `""` | Path to QG report |
+| `total_cost` | `float` | `0.0` | Cumulative cost |
+| `phase_costs` | `dict[str, float]` | `{}` | Per-phase costs |
+| `budget_limit` | `float \| None` | `None` | Budget cap |
+| `started_at` | `str` | ISO timestamp | Pipeline start time |
+| `updated_at` | `str` | ISO timestamp | Last update time |
+| `interrupted` | `bool` | `False` | Interrupted flag |
+| `interrupt_reason` | `str` | `""` | Reason for interrupt |
+| `schema_version` | `int` | `1` | State schema version |
+
+**Persistence mechanism** (`state.py`, lines 68-85):
+
+- `save()` calls `atomic_write_json(target, self.to_dict())`
+- Target: `{STATE_DIR}/PIPELINE_STATE.json` (default: `.super-orchestrator/PIPELINE_STATE.json`)
+- `to_dict()` uses `dataclasses.asdict(self)` (line 66)
+
+**Load mechanism** (`state.py`, lines 87-109):
+
+- `load()` calls `load_json(target)` then filters to known fields (line 107-108)
+- Unknown fields are silently dropped for forward compatibility
+
+### 1A.3 Atomic Write Pattern
+
+**File:** `src/build3_shared/utils.py` (lines 11-31)
+
+```python
+def atomic_write_json(path, data):
+    tmp_path = path.with_suffix(".tmp")
+    with open(tmp_path, "w") as f:
+        json.dump(data, f, indent=2, default=str)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(str(tmp_path), str(path))
+```
+
+Pattern: Write to `.tmp` file -> `flush()` + `os.fsync()` -> `os.replace()` for atomicity.
+
+### 1A.4 Data Survival Table
+
+| Data | Persists to Disk? | Location | Mechanism |
+|------|-------------------|----------|-----------|
+| PipelineState | YES | `.super-orchestrator/PIPELINE_STATE.json` | `atomic_write_json` |
+| service_map | YES | `.super-orchestrator/service_map.json` | `atomic_write_json` |
+| domain_model | YES | `.super-orchestrator/domain_model.json` | `atomic_write_json` |
+| contract_stubs | YES | `.super-orchestrator/contracts/stubs.json` | `atomic_write_json` |
+| Architect DB data | YES | `./data/architect.db` | SQLite (WAL) |
+| Contracts DB data | YES | `./data/contracts.db` | SQLite (WAL) |
+| Symbols DB data | YES | `./data/symbols.db` | SQLite (WAL) |
+| Graph RAG DB | YES | `./data/graph_rag.db` | SQLite (WAL) |
+| ChromaDB vectors | YES | `./data/chroma/` | ChromaDB PersistentClient |
+| Graph RAG vectors | YES | `./data/graph_rag_chroma/` | ChromaDB PersistentClient |
+| QualityGateReport | YES (path) | `state.quality_report_path` | Markdown file |
+| IntegrationReport | YES (path) | `state.integration_report_path` | JSON file |
+| BuilderResult | YES (dict) | `state.builder_results[service_id]` | via PipelineState.save() |
+| **FixPassResult** | **NO** | In-memory only | **DATA GAP-01** |
+| **LayerResult** | **NO** | Transient (QualityGateReport) | **DATA GAP-02** |
+| **ConvergenceResult** | **NO** | FixPassResult.convergence (in-memory) | **DATA GAP-03** |
+| **FixPassMetrics** | **NO** | FixPassResult.metrics (in-memory) | **DATA GAP-04** |
+
+### 1A.5 Build 3 Shared Models
+
+**File:** `src/build3_shared/models.py` (129 lines)
+
+All Build 3 models are plain `dataclass` (NOT Pydantic):
+
+| Class | Fields (key) | Lines |
+|-------|-------------|-------|
+| `ServiceStatus` | Enum: PENDING, BUILDING, BUILT, DEPLOYING, HEALTHY, UNHEALTHY, FAILED | 9-17 |
+| `QualityLevel` | Enum: LAYER1_SERVICE, LAYER2_CONTRACT, LAYER3_SYSTEM, LAYER4_ADVERSARIAL | 20-25 |
+| `GateVerdict` | Enum: PASSED, FAILED, PARTIAL, SKIPPED | 28-33 |
+| `ServiceInfo` | service_id, domain, stack, estimated_loc, docker_image, health_endpoint, port, status, build_cost, build_dir | 36-49 |
+| `BuilderResult` | system_id, service_id, success, cost, error, output_dir, test_passed, test_total, convergence_ratio, artifacts | 52-63 |
+| `ContractViolation` | code, severity, service, endpoint, message, expected, actual, file_path | 66-77 |
+| `ScanViolation` | code, severity, category, file_path, line, service, message | 80-88 |
+| `LayerResult` | layer, verdict, violations, contract_violations, total_checks, passed_checks, duration_seconds | 91-100 |
+| `QualityGateReport` | layers, overall_verdict, fix_attempts, max_fix_attempts, total_violations, blocking_violations | 103-111 |
+| `IntegrationReport` | services_deployed, services_healthy, contract_tests_*, integration_tests_*, data_flow_tests_*, boundary_tests_*, violations, overall_health | 114-129 |
+
+### 1A.6 Quality Gate Engine
+
+**File:** `src/quality_gate/gate_engine.py` (282 lines)
+
+`QualityGateEngine` orchestrates 4 layers sequentially with gating logic:
+
+- Layer 1 (Per-Service) -- must PASS before Layer 2 runs
+- Layer 2 (Contract) -- must PASS or PARTIAL before Layer 3 runs
+- Layer 3 (System-Level) -- must PASS or PARTIAL before Layer 4 runs
+- Layer 4 (Adversarial) -- always advisory-only (verdict forced to PASSED)
+
+**`should_promote()` method** (lines 222-254):
+- `PASSED` and `PARTIAL` allow promotion
+- `FAILED` and `SKIPPED` block subsequent layers
+- Additional check: if all violations are below `blocking_severity`, layer is promoted
+
+**`classify_violations()` method** (lines 256-281):
+- Groups violations by severity: `error`, `warning`, `info`
+- Unknown severities are bucketed under `info`
+
+### 1A.7 Fix Pass Pipeline
+
+**File:** `src/run4/fix_pass.py` (931 lines)
+
+**6-step fix cycle:** DISCOVER, CLASSIFY, GENERATE, APPLY, VERIFY, REGRESS
+
+**`FixPassResult` dataclass** (lines 560-604):
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `pass_number` | `int` | Current pass number |
+| `status` | `str` | `"pending"`, `"in_progress"`, `"completed"` |
+| `steps_completed` | `list[str]` | Steps executed (DISCOVER, CLASSIFY, etc.) |
+| `violations_discovered` | `int` | Count from DISCOVER step |
+| `p0_count` / `p1_count` / `p2_count` / `p3_count` | `int` | Classified counts |
+| `fixes_generated` / `fixes_applied` / `fixes_verified` | `int` | Fix tracking |
+| `regressions_found` | `int` | Regression count |
+| `metrics` | `FixPassMetrics` | Computed metrics |
+| `convergence` | `ConvergenceResult` | Convergence decision |
+| `cost_usd` | `float` | Pass cost |
+| `duration_s` | `float` | Pass duration |
+| `snapshot_before` / `snapshot_after` | `dict` | Violation snapshots |
+
+**`classify_priority()` function** (lines 153-244):
+- Decision tree: P0 (system cannot start), P1 (primary use case fails), P2 (secondary feature broken), P3 (cosmetic)
+- Graph RAG impact promotion: if `graph_rag_client` is provided, nodes impacting >=10 nodes are promoted to P0, >=3 nodes to P1
+
+**`check_convergence()` function** (lines 403-552):
+- 5 hard stops: P0==0 AND P1==0, max passes reached, budget exhausted, effectiveness below 30%, regression rate above 25%
+- 2 soft convergence conditions: convergence score >= 0.85, PRD REQ-033 four-condition check
+
+**`run_fix_loop()` function** (lines 801-931):
+- Iterates `execute_fix_pass()` up to `max_fix_passes` (default 5)
+- Checks convergence after each pass
+- Returns `list[FixPassResult]`
+
+### 1A.8 Contract Fix Loop (Integrator)
+
+**File:** `src/integrator/fix_loop.py` (159 lines)
+
+`ContractFixLoop` class:
+- `classify_violations()` (lines 41-61): Groups `ContractViolation` by severity (critical, error, warning, info)
+- `feed_violations_to_builder()` (lines 67-159): Writes `FIX_INSTRUCTIONS.md` via `write_fix_instructions()`, launches `agent_team` subprocess with `--depth quick`, parses `STATE.json` result
+- Builder invoked via: `sys.executable -m agent_team --cwd {builder_dir} --depth quick`
+- Timeout configurable via `config.builder.timeout` (default 1800s)
+- Environment keys filtered: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AWS_SECRET_ACCESS_KEY`
+
+### 1A.9 Quality Gate Report
+
+**File:** `src/quality_gate/report.py` (392 lines)
+
+Pure function `generate_quality_gate_report()` producing Markdown:
+- Header with overall verdict
+- Per-layer results table
+- Violations grouped by severity (error -> warning -> info)
+- Actionable recommendations
+
+Verdict display mapping (lines 32-37):
+- PASSED: checkmark icon
+- FAILED: cross icon
+- PARTIAL: warning icon
+- SKIPPED: skip icon
+
+---
+
+## Phase 1B: Storage Infrastructure
+
+### 1B.1 SQLite Connection Pool
+
+**File:** `src/shared/db/connection.py` (74 lines)
+
+`ConnectionPool` pattern:
+1. **Thread-local storage** via `threading.local()` (line 24)
+2. **WAL mode**: `PRAGMA journal_mode=WAL` (line 46)
+3. **Busy timeout**: `PRAGMA busy_timeout=30000` (30 seconds, from `DB_BUSY_TIMEOUT_MS` in `src/shared/constants.py`)
+4. **Foreign keys**: `PRAGMA foreign_keys=ON` (line 48)
+5. **Row factory**: `sqlite3.Row` for dict-like access (line 49)
+6. **Parent dir creation**: `self._db_path.parent.mkdir(parents=True, exist_ok=True)` (line 29)
+
+### 1B.2 Six-Step Pattern for New SQLite-Backed Modules
+
+Based on the existing patterns across architect, contract-engine, and codebase-intelligence:
+
+1. **Define schema** in `src/shared/db/schema.py` -- Add `init_{module}_db(pool)` function with `CREATE TABLE IF NOT EXISTS` and indexes
+2. **Create storage class** (e.g., `src/{module}/storage/{name}_store.py`) -- CRUD methods taking `ConnectionPool`
+3. **Module-level init in MCP server** -- `pool = ConnectionPool(db_path); init_{module}_db(pool); store = Store(pool)`
+4. **Lifespan init in FastAPI main** -- Same pattern as MCP but inside `@asynccontextmanager` lifespan
+5. **Register in `.mcp.json`** -- Add `DATABASE_PATH` env var for the MCP server
+6. **Add config dataclass** in `src/super_orchestrator/config.py` -- Add to `SuperOrchestratorConfig`
+
+### 1B.3 Database Schema Overview
+
+**File:** `src/shared/db/schema.py` (256 lines)
+
+| Init Function | Tables Created | Lines |
+|---------------|---------------|-------|
+| `init_architect_db(pool)` | `service_maps`, `domain_models`, `decomposition_runs` | 7-43 |
+| `init_contracts_db(pool)` | `build_cycles`, `contracts`, `contract_versions`, `breaking_changes`, `implementations`, `test_suites`, `shared_schemas`, `schema_consumers` | 46-154 |
+| `init_symbols_db(pool)` | `indexed_files`, `symbols`, `dependency_edges`, `import_references`, `graph_snapshots` | 157-238 |
+| `init_graph_rag_db(pool)` | `graph_rag_snapshots` | 241-255 |
+
+Key schema patterns:
+- All tables use `TEXT PRIMARY KEY` (UUIDs as strings)
+- Timestamps: `TEXT NOT NULL DEFAULT (datetime('now'))`
+- Status enums: `CHECK(status IN (...))` constraints
+- Foreign keys with `ON DELETE CASCADE` or `ON DELETE SET NULL`
+- Indexes on all query-targeted columns
+
+### 1B.4 ChromaDB Vector Storage
+
+**File:** `src/codebase_intelligence/storage/chroma_store.py` (188 lines)
+
+`ChromaStore` pattern:
+- **Client**: `chromadb.PersistentClient(path=chroma_path)` (line 31)
+- **Embedding function**: `DefaultEmbeddingFunction()` -- `all-MiniLM-L6-v2` (line 32)
+- **Collection**: `"code_chunks"` with cosine distance (`metadata={"hnsw:space": "cosine"}`) (lines 33-37)
+- **ID format**: `file_path::symbol_name` (from `SymbolDefinition.id`)
+- **Operations**: `add_chunks()`, `query()`, `delete_by_file()`, `get_stats()`
+
+### 1B.5 Graph Snapshot Storage
+
+**File:** `src/codebase_intelligence/storage/graph_db.py` (174 lines)
+
+`GraphDB` pattern:
+- `save_snapshot()`: Serializes NetworkX graph via `nx.node_link_data(graph, edges="edges")`
+- `load_snapshot()`: Deserializes via `nx.node_link_graph(data, edges="edges")`
+- `save_edges()`: Persists `DependencyEdge` to `dependency_edges` table
+- `delete_by_file()`: Removes edges by source or target file
+
+### 1B.6 Symbol Database
+
+**File:** `src/codebase_intelligence/storage/symbol_db.py` (270 lines)
+
+`SymbolDB` operations:
+- `save_file()`: Inserts/updates `indexed_files` row
+- `save_symbols()`: Inserts into `symbols` table with all metadata
+- `save_imports()`: Inserts into `import_references` table
+- `query_by_name()`: Searches symbols by name (exact match)
+- `query_by_file()`: Retrieves all symbols for a file
+- `update_chroma_id()`: Links symbol to ChromaDB vector
+- `delete_by_file()`: Cascading delete of file + symbols + imports
+
+---
+
+## Phase 1C: Architect Decomposition Pipeline
+
+### 1C.1 Decomposition Pipeline Steps
+
+**File:** `src/architect/mcp_server.py` (lines 46-59 for init, tool at ~line 60+)
+
+The `decompose` MCP tool runs a 7-step pipeline:
+
+1. **`parse_prd(prd_text)`** -- `src/architect/services/prd_parser.py` (1639 lines)
+   - 5 entity extraction strategies: tables, headings, sentences, data model sections, terse patterns
+   - Relationship extraction, bounded context detection, technology hints, state machine detection
+   - Returns parsed PRD with entities, relationships, contexts
+
+2. **`identify_boundaries(parsed)`** -- `src/architect/services/service_boundary.py` (445 lines)
+   - 4-step algorithm: explicit contexts, aggregate root discovery, relationship-based assignment, monolith fallback
+
+3. **`build_service_map(boundaries, parsed)`** -- `src/architect/services/service_boundary.py`
+   - Converts boundaries to `ServiceMap` with `ServiceDefinition` list
+
+4. **`build_domain_model(parsed, boundaries)`** -- `src/architect/services/domain_modeler.py` (369 lines)
+   - Creates `DomainEntity` + `DomainRelationship` list with state machine detection
+
+5. **`generate_contract_stubs(service_map)`** -- `src/architect/services/contract_generator.py` (331 lines)
+   - Produces OpenAPI 3.1 specs with CRUD endpoints per entity
+
+6. **`validate_decomposition(service_map, domain_model)`** -- `src/architect/services/validator.py` (211 lines)
+   - 7 checks: circular deps (NetworkX), entity overlap, orphans, completeness, relationship consistency, name uniqueness, contract consistency
+
+7. **Persist results** -- `ServiceMapStore.save()`, `DomainModelStore.save()`
+
+### 1C.2 Pydantic v2 Models (Architect)
+
+**File:** `src/shared/models/architect.py` (150 lines)
+
+Key models (all Pydantic v2 `BaseModel`):
+- `ServiceStack`: language, framework, database
+- `ServiceDefinition`: name (pattern `^[a-z][a-z0-9-]*$`), domain, description, stack, estimated_loc, owns_entities, provides/consumes_contracts
+- `EntityField`: name, type, required, description
+- `StateTransition`: from_state, to_state, trigger, guard
+- `StateMachine`: entity_name, states, transitions
+- `DomainEntity`: name, description, owning_service, fields, state_machine
+- `DomainRelationship`: source_entity, target_entity, relationship_type, cardinality (pattern `^(1|N):(1|N)$`)
+- `DomainModel`: entities, relationships, bounded_contexts
+- `ServiceMap`: services, relationships, project_name, prd_hash
+- `DecompositionResult`: service_map, domain_model, validation_errors, contract_stubs
+
+### 1C.3 Insertion Points for Pre-Validation and Acceptance Tests
+
+For a Persistent Intelligence Layer that needs to hook into the decomposition pipeline:
+
+| Insertion Point | File | Location | Purpose |
+|----------------|------|----------|---------|
+| Post-parse hook | `src/architect/services/prd_parser.py` | After `parse_prd()` returns | Store parsed entities/relationships |
+| Post-validation hook | `src/architect/services/validator.py` | After `validate_decomposition()` | Store validation results with patterns |
+| Post-persist hook | `src/architect/mcp_server.py` | After `service_map_store.save()` | Index decomposition for pattern learning |
+| Pre-decompose hook | `src/architect/mcp_server.py` | Before `parse_prd()` | Inject learned patterns as context |
+
+---
+
+## Phase 1D: Contract Engine
+
+### 1D.1 Contract Test Generator
+
+**File:** `src/contract_engine/services/test_generator.py` (605 lines)
+
+`ContractTestGenerator` class:
+- **OpenAPI tests**: Generates Schemathesis-based tests with parameterized endpoints
+- **AsyncAPI tests**: Generates jsonschema validation tests
+- **Caching**: Via `test_suites` table keyed by `(contract_id, framework, include_negative)` and `spec_hash`
+- **Frameworks**: `pytest` (default), `jest`
+
+### 1D.2 Contract Engine MCP Server
+
+**File:** `src/contract_engine/mcp_server.py` (472 lines)
+
+10 MCP tools:
+
+| Tool | Purpose |
+|------|---------|
+| `create_contract` | Create/upsert a contract (openapi, asyncapi, json_schema) |
+| `list_contracts` | Query contracts with optional filters |
+| `get_contract` | Retrieve single contract by ID |
+| `validate_spec` | Validate spec without persisting |
+| `check_breaking_changes` | Compare current vs new spec |
+| `mark_implemented` | Record implementation evidence |
+| `get_unimplemented_contracts` | Find contracts without implementations |
+| `generate_tests` | Generate test suites from contract |
+| `check_compliance` | Check runtime data against contract |
+| `validate_endpoint` | Validate a single endpoint response |
+
+Module-level init (lines 46-52):
+```python
+pool = ConnectionPool(_database_path)
+init_contracts_db(pool)
+# ... 5 service objects instantiated
+```
+
+### 1D.3 Pipeline Contract Registration
+
+**File:** `src/super_orchestrator/pipeline.py` (lines ~456-570)
+
+`run_contract_registration()`:
+- Reads contract stubs from `state.contract_registry_path`
+- Attempts MCP registration via `ContractEngineClient.create_contract()`
+- Filesystem fallback: writes contracts to `{output_dir}/contracts/{service_name}.json`
+- Updates `state.phase_artifacts[PHASE_CONTRACT_REGISTRATION]`
+
+### 1D.4 Insertion Points for Acceptance Test Generation
+
+| Insertion Point | File | Location | Purpose |
+|----------------|------|----------|---------|
+| Post-contract-create | `src/contract_engine/mcp_server.py` | After `create_contract` tool | Trigger acceptance test generation |
+| Post-test-generate | `src/contract_engine/services/test_generator.py` | After test code generated | Store generated tests as patterns |
+| Pre-compliance-check | `src/contract_engine/mcp_server.py` | Before `check_compliance` tool | Inject learned compliance patterns |
+
+---
+
+## Phase 1E: Quality Gate Scanners
+
+### 1E.1 Scanner Protocol
+
+All scanners implement the async scan protocol:
+
+```python
+async def scan(self, target_dir: Path) -> list[ScanViolation]
+```
+
+**SecurityScanner** (`src/quality_gate/security_scanner.py`, 622 lines):
+- `EXCLUDED_DIRS`: `frozenset({"node_modules", ".venv", "venv", "__pycache__", ".git", "dist", "build"})` (lines 25-27)
+- `SCANNABLE_EXTENSIONS`: 16 extensions including `.py`, `.js`, `.ts`, `.yaml`, `.json`, `.env` (lines 31-36)
+- `MAX_VIOLATIONS_PER_CATEGORY`: 200 (line 29)
+- `_NOSEC_PATTERN`: Regex for `# nosec` / `// noqa:SEC-xxx` suppression (lines 42-45)
+
+Scan code categories:
+- JWT Security: SEC-001..SEC-006 (6 codes)
+- CORS: CORS-001..CORS-003 (3 codes)
+- Secret Detection: SEC-SECRET-001..SEC-SECRET-012 (12 codes)
+
+**Layer3Scanner** (`src/quality_gate/layer3_system_level.py`, 233 lines):
+- Composes: `SecurityScanner`, `ObservabilityChecker`, `DockerSecurityScanner`
+- Runs all three via `asyncio.gather()` concurrently
+- Per-category violation cap: 200 (`MAX_VIOLATIONS_PER_CATEGORY`)
+- Verdict logic: any `error` -> FAILED, any `warning` (no errors) -> PARTIAL, no violations/only `info` -> PASSED
+
+### 1E.2 Full Scan Code Catalog
+
+**File:** `src/build3_shared/constants.py` (lines 44-128)
+
+| Category | Code Range | Count |
+|----------|-----------|-------|
+| JWT Security | SEC-001..SEC-006 | 6 |
+| CORS | CORS-001..CORS-003 | 3 |
+| Secret Detection | SEC-SECRET-001..SEC-SECRET-012 | 12 |
+| Logging | LOG-001, LOG-004, LOG-005 | 3 |
+| Trace Propagation | TRACE-001 | 1 |
+| Health Endpoints | HEALTH-001 | 1 |
+| Docker Security | DOCKER-001..DOCKER-008 | 8 |
+| Adversarial | ADV-001..ADV-006 | 6 |
+| **Total** | | **40** |
+
+Assertion at line 128: `assert len(ALL_SCAN_CODES) == 40`
+
+### 1E.3 Scanner Registration Pattern
+
+To add a new scanner category:
+
+1. Define scan codes in `src/build3_shared/constants.py`
+2. Create scanner class in `src/quality_gate/{scanner_name}.py` implementing `async def scan(self, target_dir: Path) -> list[ScanViolation]`
+3. Register in `Layer3Scanner.__init__()` at `src/quality_gate/layer3_system_level.py` (line 68-71)
+4. Add to `asyncio.gather()` in `Layer3Scanner.evaluate()` (implicit from list)
+5. Add category prefix to `_KNOWN_CATEGORIES` tuple (line 43-51)
+6. Update `QualityGateConfig.layer3_scanners` default in `src/super_orchestrator/config.py` (line 46-48)
+
+### 1E.4 Quality Gate 4-Layer Architecture
+
+**File:** `src/quality_gate/gate_engine.py` (282 lines)
+
+| Layer | Scanner | Method | Sync/Async | Gating |
+|-------|---------|--------|------------|--------|
+| Layer 1 | `Layer1Scanner` | `evaluate(builder_results)` | Sync | Must PASS to continue |
+| Layer 2 | `Layer2Scanner` | `evaluate(integration_report)` | Sync | Must PASS or PARTIAL |
+| Layer 3 | `Layer3Scanner` | `evaluate(target_dir)` | Async | Must PASS or PARTIAL |
+| Layer 4 | `Layer4Scanner` | `evaluate(target_dir)` | Async | Advisory-only |
+
+Layer 4 receives `graph_rag_client` in constructor (line 67):
+```python
+self._layer4 = Layer4Scanner(graph_rag_client=graph_rag_client)
+```
+
+---
+
+## Phase 1F: MCP Server Patterns
+
+### 1F.1 Existing MCP Servers
+
+**File:** `.mcp.json` (28 lines)
+
+| Server Name | Module | Database | Port |
+|-------------|--------|----------|------|
+| `architect` | `src.architect.mcp_server` | `./data/architect.db` | N/A (stdio) |
+| `contract-engine` | `src.contract_engine.mcp_server` | `./data/contracts.db` | N/A (stdio) |
+| `codebase-intelligence` | `src.codebase_intelligence.mcp_server` | `./data/symbols.db` + `./data/chroma` + `./data/graph.json` | N/A (stdio) |
+
+Additionally (not in .mcp.json but exists):
+| `graph-rag` | `src.graph_rag.mcp_server` | `./data/graph_rag.db` + `./data/graph_rag_chroma` + 3 read-only DBs | N/A (stdio) |
+
+### 1F.2 MCP Server Template Pattern
+
+All 4 MCP servers follow the same structure:
+
+```python
+# 1. Imports
+from mcp.server.fastmcp import FastMCP
+from src.shared.db.connection import ConnectionPool
+from src.shared.db.schema import init_{module}_db
+
+# 2. Module-level init
+_database_path = os.environ.get("DATABASE_PATH", "./data/{module}.db")
+pool = ConnectionPool(_database_path)
+init_{module}_db(pool)
+# ... storage/service instantiation ...
+
+# 3. MCP server instance
+mcp = FastMCP("{ServerName}")
+
+# 4. Tool definitions with @mcp.tool() decorator
+@mcp.tool()
+def tool_name(param1: str, param2: int = 0) -> dict:
+    """Google-style docstring."""
+    try:
+        # ... business logic ...
+        return result_dict
+    except SomeError as exc:
+        return {"error": str(exc)}
+    except Exception as exc:
+        logger.error("Unexpected error: %s", exc)
+        return {"error": f"Internal error: {exc}"}
+```
+
+### 1F.3 Three-Tier Exception Handling Pattern
+
+All MCP tools use consistent exception handling:
+
+```python
+@mcp.tool()
+def some_tool(...) -> dict:
+    try:
+        # Business logic
+        return result
+    except AppError as exc:        # Tier 1: Known application errors
+        return {"error": exc.message}
+    except Exception as exc:       # Tier 2: Unexpected errors
+        logger.error("...", exc)
+        return {"error": f"Internal error: {exc}"}
+```
+
+Some tools add a third tier for specific exceptions (e.g., `ParsingError`, `NotFoundError`).
+
+### 1F.4 Graph RAG MCP Server (4th Server)
+
+**File:** `src/graph_rag/mcp_server.py` (lines 1-60)
+
+7 MCP tools, read-only access to 3 external databases:
+
+| Env Variable | Default Path | Access |
+|-------------|--------------|--------|
+| `GRAPH_RAG_DB_PATH` | `./data/graph_rag.db` | Read/Write |
+| `GRAPH_RAG_CHROMA_PATH` | `./data/graph_rag_chroma` | Read/Write |
+| `CI_DATABASE_PATH` | `./data/codebase_intel.db` | Read-only |
+| `ARCHITECT_DATABASE_PATH` | `./data/architect.db` | Read-only |
+| `CONTRACT_DATABASE_PATH` | `./data/contracts.db` | Read-only |
+
+4 ConnectionPools created at module level (lines 56-59).
+
+### 1F.5 Adding a New MCP Server
+
+To add a Persistence Intelligence MCP server:
+
+1. Create `src/persistence_intelligence/mcp_server.py` following the template in 1F.2
+2. Add `init_persistence_db(pool)` to `src/shared/db/schema.py`
+3. Register in `.mcp.json` with appropriate env vars
+4. Add `PersistenceConfig` section to `src/super_orchestrator/config.py` (already exists at lines 72-79)
+5. Create `src/persistence_intelligence/mcp_client.py` with retry pattern (3 retries, 1s exponential backoff)
+6. Wire into pipeline phases that need persistence lookups
+
+### 1F.6 MCP Tool Count Summary
+
+| Server | Tool Count |
+|--------|-----------|
+| Architect | 4 |
+| Contract Engine | 10 |
+| Codebase Intelligence | 8 |
+| Graph RAG | 7 |
+| **Total** | **29** |
+
+---
+
+## Phase 1G: Config and Depth-Gating
+
+### 1G.1 Configuration Architecture
+
+**File:** `src/super_orchestrator/config.py` (150 lines)
+
+```
+SuperOrchestratorConfig
+  |-- ArchitectConfig (max_retries, timeout, auto_approve)
+  |-- BuilderConfig (max_concurrent, timeout_per_builder, depth)
+  |-- IntegrationConfig (timeout, traefik_image, compose_file, test_compose_file)
+  |-- QualityGateConfig (max_fix_retries, layer3_scanners, layer4_enabled, blocking_severity)
+  |-- GraphRAGConfig (enabled, mcp_command, mcp_args, database_path, chroma_path, ...)
+  |-- PersistenceConfig (enabled, db_path, chroma_path, max_patterns_per_injection, min_occurrences_for_promotion)
+  |-- budget_limit, depth, phase_timeouts, mode, output_dir, ...
+```
+
+### 1G.2 PersistenceConfig (Already Defined)
+
+**File:** `src/super_orchestrator/config.py` (lines 72-79)
+
+```python
+@dataclass
+class PersistenceConfig:
+    enabled: bool = False
+    db_path: str = ".super-orchestrator/persistence.db"
+    chroma_path: str = ".super-orchestrator/pattern-store"
+    max_patterns_per_injection: int = 5
+    min_occurrences_for_promotion: int = 10
+```
+
+This config is already wired into `SuperOrchestratorConfig` (line 91):
+```python
+persistence: PersistenceConfig = field(default_factory=PersistenceConfig)
+```
+
+And loaded from YAML (line 134, 147):
+```python
+persistence_raw = raw.get("persistence", {})
+# ...
+persistence=PersistenceConfig(**_pick(persistence_raw, PersistenceConfig)),
+```
+
+### 1G.3 Feature Flags and Depth-Gating
+
+| Feature Flag | Config Location | Default | Effect |
+|-------------|----------------|---------|--------|
+| `layer4_enabled` | `QualityGateConfig` (line 50) | `True` | Controls whether adversarial analysis runs |
+| `graph_rag.enabled` | `GraphRAGConfig` (line 57) | `True` | Controls Graph RAG module activation |
+| `persistence.enabled` | `PersistenceConfig` (line 75) | `False` | Controls Persistent Intelligence Layer |
+| `architect.auto_approve` | `ArchitectConfig` (line 18) | `False` | Auto-approve decomposition results |
+| `depth` | `SuperOrchestratorConfig` (line 93) | `"standard"` | Pipeline depth (standard/thorough) |
+| `mode` | `SuperOrchestratorConfig` (line 97) | `"auto"` | `"docker"`, `"mcp"`, or `"auto"` |
+
+### 1G.4 YAML Config Loading
+
+**File:** `src/super_orchestrator/config.py` (lines 101-149)
+
+`load_super_config(path)`:
+- Returns defaults if `path` is `None` or file doesn't exist
+- Uses `_pick(data, cls)` helper to filter to known dataclass fields
+- Unknown keys silently ignored (forward-compatible)
+- Sub-configs extracted by key: `architect`, `builder`, `integration`, `quality_gate`, `graph_rag`, `persistence`
+
+### 1G.5 Agent Team / Builder Config
+
+**DATA GAP-05**: The `agent_team` and `agent_team_v15` directories are NOT present in the repository. They are external dependencies imported at runtime:
+
+```python
+# src/super_orchestrator/pipeline.py (line ~718+)
+from agent_team_v15 import ...  # or
+from agent_team import ...       # fallback
+```
+
+Builder context injection includes a `graph_rag_context` field from `phase_artifacts`, meaning the builder receives Graph RAG context for code generation.
+
+---
+
+## Phase 1H: Test Infrastructure
+
+### 1H.1 Test Configuration
+
+**File:** `pyproject.toml` (test section):
 - `testpaths = ["tests"]`
 - `asyncio_mode = "auto"` (pytest-asyncio)
 - `pythonpath = ["."]`
 - Custom markers: `integration`, `e2e`, `benchmark`
 
-**Entry Point:** `super-orchestrator = "src.super_orchestrator.cli:app"` (Build 3 CLI)
+### 1H.2 Root Conftest
+
+**File:** `tests/conftest.py` (197 lines)
+
+12 fixtures using `sample_` naming convention:
+
+| Fixture | Type | Key Data |
+|---------|------|----------|
+| `tmp_db_path` | `Path` | Temporary SQLite path |
+| `connection_pool` | `ConnectionPool` | Auto-closed pool with temp DB |
+| `sample_service_stack` | `ServiceStack` | python, fastapi, sqlite |
+| `sample_service_definition` | `ServiceDefinition` | user-service |
+| `sample_entity_field` | `EntityField` | email, string, required |
+| `sample_state_machine` | `StateMachine` | 3-state (active/inactive/suspended) |
+| `sample_domain_entity` | `DomainEntity` | User entity |
+| `sample_domain_relationship` | `DomainRelationship` | Order REFERENCES User |
+| `sample_contract_entry` | `ContractEntry` | OpenAPI contract |
+| `sample_symbol_definition` | `SymbolDefinition` | AuthService class |
+| `sample_health_status` | `HealthStatus` | Healthy test-service |
+| `mock_env_vars` | Monkeypatch | LOG_LEVEL, DATABASE_PATH, etc. |
+
+SQLite test isolation: All DB tests use `tmp_path` fixtures for isolated databases.
+
+### 1H.3 Security Scanner Test Pattern
+
+**File:** `tests/build3/test_security_scanner.py`
+
+Pattern:
+- Async test functions using `pytest.mark.asyncio` (auto mode)
+- `_scan_file()` helper: writes content to temp file, runs scanner against temp dir
+- `_codes()` helper: extracts violation codes from result list
+- Class-per-scan-code organization (e.g., all SEC-001 tests in one class)
+- Tests both positive (violation detected) and negative (clean code, nosec suppression)
 
----
-
-### 1A.2 Shared Modules (`src/shared/`)
-
-All three Build 1 services depend on this shared layer.
-
-#### 1A.2.1 Configuration (`src/shared/config.py`)
-
-Base class: `SharedConfig(BaseSettings)` with fields:
-- `log_level: str = "info"`
-- `database_path: Path = Path("./data/service.db")`
-- `database_url: str = ""` (PostgreSQL, optional)
-- `redis_url: str = ""` (optional)
-
-Derived configs:
-- `ArchitectConfig` adds: `contract_engine_url`, `codebase_intel_url`
-- `ContractEngineConfig` (no extra fields)
-- `CodebaseIntelConfig` adds: `chroma_path`, `graph_path`, `contract_engine_url`
-
-All load from environment variables via Pydantic Settings.
-
-#### 1A.2.2 Constants (`src/shared/constants.py`)
-
-| Constant | Value |
-|----------|-------|
-| `VERSION` | `"1.0.0"` |
-| `ARCHITECT_PORT` | `8001` |
-| `CONTRACT_ENGINE_PORT` | `8002` |
-| `CODEBASE_INTEL_PORT` | `8003` |
-| `ARCHITECT_SERVICE_NAME` | `"architect"` |
-| `CONTRACT_ENGINE_SERVICE_NAME` | `"contract-engine"` |
-| `CODEBASE_INTEL_SERVICE_NAME` | `"codebase-intelligence"` |
-
-#### 1A.2.3 Error Hierarchy (`src/shared/errors.py`)
-
-```
-AppError (base)
-  +-- ValidationError (422)
-  +-- NotFoundError (404)
-  +-- ConflictError (409)
-  +-- ImmutabilityViolationError (409)
-  +-- ParsingError (400)
-  +-- SchemaError (422)
-  +-- ContractNotFoundError (404)
-```
-
-All inherit from `AppError` which carries `status_code`, `message`, and `details`. A FastAPI exception handler is registered via `register_error_handlers(app)`.
-
-#### 1A.2.4 Database (`src/shared/db/`)
-
-**`connection.py`** -- `ConnectionPool`:
-- Thread-local SQLite connections via `threading.local()`
-- WAL mode, `busy_timeout=30000`, `foreign_keys=ON`, `journal_mode=WAL`
-- `get() -> sqlite3.Connection` returns thread-local connection
-- `close()` closes all thread-local connections
-
-**`schema.py`** -- Three initializers:
-1. `init_architect_db(pool)` -- Creates: `service_maps`, `domain_models`, `decomposition_runs`
-2. `init_contracts_db(pool)` -- Creates: `build_cycles`, `contracts`, `contract_versions`, `breaking_changes`, `implementations`, `test_suites`, `shared_schemas`, `schema_consumers`
-3. `init_symbols_db(pool)` -- Creates: `indexed_files`, `symbols`, `dependency_edges`, `import_references`, `graph_snapshots`
-
-#### 1A.2.5 Data Models (`src/shared/models/`)
-
-**`architect.py`:**
-- `ServiceStack` (language, framework, database)
-- `RelationshipType` (Enum: REFERENCES, BELONGS_TO, USES, PUBLISHES, SUBSCRIBES)
-- `ServiceDefinition` (name, domain, description, stack, estimated_loc, owns_entities, provides/consumes_contracts)
-- `EntityField`, `StateTransition`, `StateMachine`
-- `DomainEntity` (name, description, owning_service, fields, state_machine)
-- `DomainRelationship` (source_entity, target_entity, relationship_type, cardinality)
-- `DomainModel` (entities, relationships, bounded_contexts)
-- `ServiceMap` (services: list[ServiceDefinition], relationships, project_name, prd_hash)
-- `DecompositionResult` (service_map, domain_model, validation_errors, contract_stubs)
-- `DecomposeRequest` (prd_text, project_name)
-- `DecompositionRun` (id, project_name, prd_hash, result_json, timestamps)
-
-**`contracts.py`:**
-- `ContractType` (Enum: OPENAPI, ASYNCAPI, GRPC, GRAPHQL, PACT)
-- `ContractStatus` (Enum: DRAFT, ACTIVE, DEPRECATED, SUPERSEDED)
-- `ImplementationStatus` (Enum: NOT_STARTED, IN_PROGRESS, IMPLEMENTED, VERIFIED)
-- `ContractEntry` (id, type, version, service_name, spec, status, timestamps, build_cycle)
-- `ContractCreate` (type, version, service_name, spec, build_cycle)
-- `ContractListResponse` (contracts, total)
-- `EndpointSpec`, `OpenAPIContract`, `AsyncAPIContract`, `SharedSchema`
-- `BreakingChange` (contract_id, field, old_value, new_value, severity, description)
-- `ContractVersion` (contract_id, version, spec_snapshot, changes, timestamps)
-- `ImplementationRecord` (contract_id, service_name, status, verified_at)
-- `ValidationResult` (valid, errors, warnings, spec_version)
-- `ValidateRequest` (spec, spec_type)
-- `MarkRequest` (contract_ids, service_name, status)
-- `MarkResponse` (marked: int, total_implementations: int, all_implemented: bool)
-- `UnimplementedContract` (contract_id, service_name, type, version)
-- `ContractTestSuite` (contract_id, test_code, framework, generated_at, test_count)
-- `ComplianceViolation`, `ComplianceResult`
-
-**`codebase.py`:**
-- `SymbolKind` (Enum: CLASS, FUNCTION, METHOD, INTERFACE, TYPE, ENUM, VARIABLE)
-- `Language` (Enum: PYTHON, TYPESCRIPT, CSHARP, GO)
-- `DependencyRelation` (Enum: IMPORTS, CALLS, INHERITS, IMPLEMENTS, USES)
-- `SymbolDefinition` (id auto-generated as `{file_path}::{symbol_name}`, file_path, symbol_name, kind, language, service_name, line_start/end, signature, docstring, is_exported, parent_symbol)
-- `ImportReference` (source_file, target_file, imported_names, line, is_relative)
-- `DependencyEdge`, `CodeChunk`, `SemanticSearchResult`, `ServiceInterface`
-- `DeadCodeEntry`, `GraphAnalysis`, `IndexStats`
-
-**`common.py`:**
-- `BuildCycle` (cycle_id, started_at, completed_at, services)
-- `ArtifactRegistration` (file_path, service_name, source)
-- `HealthStatus` (status, service_name, version, database, uptime_seconds, details)
-
-#### 1A.2.6 Logging (`src/shared/logging.py`)
-
-- `JSONFormatter` -- Structured JSON log output
-- `TraceIDMiddleware` -- ASGI middleware that propagates `X-Trace-ID` header
-
-#### 1A.2.7 Utilities (`src/shared/utils.py`)
-
-- `read_file_safe(path) -> str | None`
-- `compute_hash(text) -> str` (SHA-256)
-- `safe_json_loads(text) -> dict | None`
-
----
-
-### 1A.3 Architect Service (`src/architect/`)
-
-#### Entry Point: `src/architect/main.py`
-
-- FastAPI app with `lifespan` async context manager
-- **Lifespan initialization:**
-  1. `ConnectionPool(config.database_path)` -- SQLite pool
-  2. `init_architect_db(pool)` -- Creates tables
-  3. Stores `pool`, `config`, `start_time` on `app.state`
-- **Lifespan teardown:** `pool.close()`
-- **Routers registered:** `health_router`, `decomposition_router`, `service_map_router`, `domain_model_router`
-
-#### HTTP Endpoints
-
-| Method | Path | Status | Request Body | Response Model |
-|--------|------|--------|-------------|----------------|
-| `GET` | `/api/health` | 200 | -- | `HealthStatus` |
-| `POST` | `/api/decompose` | 201 | `DecomposeRequest` | `DecompositionResult` |
-| `GET` | `/api/service-map` | 200 | -- | `ServiceMap` |
-| `GET` | `/api/domain-model` | 200 | -- | `DomainModel` |
-
-#### Decomposition Pipeline (`POST /api/decompose`)
-
-Runs via `asyncio.to_thread` in a blocking function:
-1. `parse_prd(prd_text)` -- Extracts entities, relationships, contexts, tech hints, state machines
-2. `identify_boundaries(parsed)` -- Aggregate root algorithm (4 strategies: explicit contexts, aggregate roots, relationship-based, fallback monolith)
-3. `build_service_map(boundaries, parsed)` -- Creates ServiceDefinition list
-4. `build_domain_model(parsed, boundaries)` -- Creates DomainEntity + DomainRelationship list
-5. `generate_contract_stubs(service_map)` -- Creates OpenAPI 3.1 specs (CRUD paths per entity)
-6. `validate_decomposition(service_map, domain_model)` -- 7 checks (circular deps, entity overlap, orphans, completeness, relationship consistency, name uniqueness, contract consistency)
-7. Persist results (ServiceMapStore.save, DomainModelStore.save)
-8. Return `DecompositionResult`
-
-#### Services Layer
-
-| Module | Purpose |
-|--------|---------|
-| `services/prd_parser.py` | 5 entity extraction strategies (tables, headings, sentences, data model sections, terse patterns), relationship extraction, bounded context detection, technology hints, state machine detection |
-| `services/service_boundary.py` | Aggregate root algorithm, boundary identification |
-| `services/domain_modeler.py` | Domain model construction with state machines |
-| `services/contract_generator.py` | OpenAPI 3.1 stub generation with CRUD paths |
-| `services/validator.py` | 7-check validation suite using NetworkX for circular dependency detection |
-
-#### Storage Layer
-
-| Module | Purpose |
-|--------|---------|
-| `storage/service_map_store.py` | `save()`, `get_latest()`, `get_by_prd_hash()` |
-| `storage/domain_model_store.py` | `save()`, `get_latest()` |
-
-#### MCP Server (`src/architect/mcp_server.py`)
-
-Server name: `"Architect"` (FastMCP)
-
-| Tool Name | Parameters | Returns |
-|-----------|------------|---------|
-| `decompose` | `prd_text: str` | `DecompositionResult` dict |
-| `get_service_map` | `project_name: str = ""` | `ServiceMap` dict |
-| `get_domain_model` | `project_name: str = ""` | `DomainModel` dict |
-| `get_contracts_for_service` | `service_name: str` | list of contracts (makes HTTP calls to Contract Engine) |
-
-**Cross-service dependency:** `get_contracts_for_service` tool calls Contract Engine HTTP API (`GET /api/contracts?service_name=...`).
-
-#### MCP Client (`src/architect/mcp_client.py`)
-
-Class: `ArchitectClient`
-
-| Method | MCP Tool Called | Fallback |
-|--------|----------------|----------|
-| `decompose(prd_text)` | `decompose` | -- |
-| `get_service_map()` | `get_service_map` | -- |
-| `get_contracts_for_service(name)` | `get_contracts_for_service` | -- |
-| `get_domain_model()` | `get_domain_model` | -- |
-| `decompose_prd_basic(prd_text)` | -- | WIRE-011 filesystem fallback |
-| `decompose_prd_with_fallback(prd_text)` | `decompose` | Falls back to `decompose_prd_basic` |
-
-**Retry pattern:** 3 retries, base 1s exponential backoff.
-
----
-
-### 1A.4 Contract Engine Service (`src/contract_engine/`)
-
-#### Entry Point: `src/contract_engine/main.py`
-
-- FastAPI app with `lifespan` async context manager
-- **Lifespan initialization:**
-  1. `ConnectionPool(config.database_path)` -- SQLite pool
-  2. `init_contracts_db(pool)` -- Creates tables
-  3. Stores `pool`, `config`, `start_time` on `app.state`
-- **Lifespan teardown:** `pool.close()`
-- **Routers registered:** `health_router`, `contracts_router`, `validation_router`, `breaking_changes_router`, `implementations_router`, `tests_router`
-
-#### HTTP Endpoints
-
-| Method | Path | Status | Request Body | Response Model |
-|--------|------|--------|-------------|----------------|
-| `GET` | `/api/health` | 200 | -- | `HealthStatus` |
-| `POST` | `/api/contracts` | 201 | `ContractCreate` | `ContractEntry` |
-| `GET` | `/api/contracts` | 200 | query: `service_name`, `type`, `status` | `ContractListResponse` |
-| `GET` | `/api/contracts/{contract_id}` | 200 | -- | `ContractEntry` |
-| `DELETE` | `/api/contracts/{contract_id}` | 204 | -- | -- |
-| `POST` | `/api/validate` | 200 | `ValidateRequest` | `ValidationResult` |
-| `POST` | `/api/breaking-changes/{contract_id}` | 200 | new spec (body) | `list[BreakingChange]` |
-| `POST` | `/api/implementations/mark` | 200 | `MarkRequest` | `MarkResponse` |
-| `GET` | `/api/implementations/unimplemented` | 200 | query: `service_name` | `list[UnimplementedContract]` |
-| `POST` | `/api/tests/generate/{contract_id}` | 200 | -- | `ContractTestSuite` |
-| `GET` | `/api/tests/{contract_id}` | 200 | -- | `ContractTestSuite` |
-| `POST` | `/api/compliance/check/{contract_id}` | 200 | -- | `list[ComplianceResult]` |
-
-#### Services Layer
-
-| Module | Purpose |
-|--------|---------|
-| `services/contract_store.py` | CRUD for contracts with `ON CONFLICT DO UPDATE` upsert |
-| `services/openapi_validator.py` | OpenAPI validation via `openapi-spec-validator` + `prance` for `$ref` resolution |
-| `services/asyncapi_validator.py` | AsyncAPI validation via `jsonschema` Draft 2020-12 |
-| `services/asyncapi_parser.py` | Full AsyncAPI 2.x/3.x parser with `$ref` resolution, circular ref detection |
-| `services/breaking_change_detector.py` | Deep-diff of OpenAPI specs (paths, methods, params, request body, responses, schemas) |
-| `services/compliance_checker.py` | OpenAPI/AsyncAPI runtime validation, max 3 levels deep |
-| `services/implementation_tracker.py` | `mark_implemented()` returns `MarkResponse`, `verify_implementation()`, `get_unimplemented()` |
-| `services/schema_registry.py` | Manages `shared_schemas` + `schema_consumers` tables |
-| `services/test_generator.py` | Schemathesis tests for OpenAPI, jsonschema tests for AsyncAPI, with caching |
-| `services/version_manager.py` | Build cycle immutability enforcement |
-
-#### MCP Server (`src/contract_engine/mcp_server.py`)
-
-Server name: `"Contract Engine"` (FastMCP)
-
-| Tool Name | Parameters | Returns |
-|-----------|------------|---------|
-| `create_contract` | `type, version, service_name, spec` | `ContractEntry` dict |
-| `list_contracts` | `service_name?, type?, status?` | `ContractListResponse` dict |
-| `get_contract` | `contract_id` | `ContractEntry` dict |
-| `validate_spec` | `spec, spec_type` | `ValidationResult` dict |
-| `check_breaking_changes` | `contract_id, new_spec` | list of `BreakingChange` dicts |
-| `mark_implemented` | `contract_ids, service_name, status?` | `{"marked", "total", "all_implemented"}` |
-| `get_unimplemented_contracts` | `service_name?` | list of `UnimplementedContract` dicts |
-| `generate_tests` | `contract_id` | `str` (test_code only) |
-| `check_compliance` | `contract_id` | list of `ComplianceResult` dicts |
-| `validate_endpoint` | `contract_id, method, path, status_code?, response_body?` | `{"valid", "errors"}` |
-
-#### MCP Client (`src/contract_engine/mcp_client.py`)
-
-Class: `ContractEngineClient`
-
-| Method | MCP Tool Called | Fallback |
-|--------|----------------|----------|
-| `create_contract(...)` | `create_contract` | -- |
-| `list_contracts(...)` | `list_contracts` | -- |
-| `get_contract(id)` | `get_contract` | -- |
-| `validate_spec(...)` | `validate_spec` | -- |
-| `check_breaking_changes(...)` | `check_breaking_changes` | -- |
-| `mark_implemented(...)` | `mark_implemented` | -- |
-| `get_unimplemented(...)` | `get_unimplemented_contracts` | -- |
-| `generate_tests(id)` | `generate_tests` | Returns `str` |
-| `check_compliance(id)` | `check_compliance` | -- |
-| `run_api_contract_scan(...)` | -- | WIRE-009 filesystem fallback |
-| `get_contracts_with_fallback(...)` | `list_contracts` | Falls back to `run_api_contract_scan` |
-
-**Retry pattern:** 3 retries, base 1s exponential backoff.
-
----
-
-### 1A.5 Codebase Intelligence Service (`src/codebase_intelligence/`)
-
-#### Entry Point: `src/codebase_intelligence/main.py`
-
-- FastAPI app with `lifespan` async context manager
-- **Lifespan initialization (most complex of the three):**
-  1. `ConnectionPool(config.database_path)` -- SQLite pool
-  2. `init_symbols_db(pool)` -- Creates tables
-  3. `SymbolDB(pool)` -- Symbol storage
-  4. `GraphDB(pool)` -- Graph edge/snapshot storage
-  5. `ChromaStore(config.chroma_path)` -- Vector store (downloads embedding model if needed)
-  6. `GraphBuilder(existing_snapshot)` -- Loads from `GraphDB.load_snapshot()` if available
-  7. `GraphAnalyzer(graph_builder.graph)`
-  8. `ASTParser()` -- Multi-language tree-sitter parser
-  9. `SymbolExtractor()` -- Converts raw parser output to `SymbolDefinition` models
-  10. `ImportResolver()` -- Resolves import statements to file paths
-  11. `DeadCodeDetector(graph_builder.graph)` -- Dead code analysis
-  12. `SemanticIndexer(chroma_store, symbol_db)` -- Vector indexing
-  13. `SemanticSearcher(chroma_store)` -- Vector search
-  14. `ServiceInterfaceExtractor(ast_parser, symbol_extractor)` -- Endpoint/event detection
-  15. `IncrementalIndexer(ast_parser, symbol_extractor, import_resolver, graph_builder, symbol_db, graph_db, semantic_indexer)` -- Full pipeline orchestrator
-- **Lifespan teardown:** Saves graph snapshot, closes pool
-- **All objects stored on `app.state`**
-- **Routers registered:** `health_router`, `symbols_router`, `dependencies_router`, `search_router`, `artifacts_router`, `dead_code_router`
-
-#### HTTP Endpoints
-
-| Method | Path | Status | Request Body | Response Model |
-|--------|------|--------|-------------|----------------|
-| `GET` | `/api/health` | 200 | -- | `HealthStatus` (includes ChromaDB status) |
-| `GET` | `/api/symbols` | 200 | query: `name`, `kind`, `language`, `service_name`, `file_path` | `list[dict]` |
-| `GET` | `/api/dependencies` | 200 | query: `file_path`, `depth`, `direction` | `dict` (file_path, depth, dependencies, dependents) |
-| `GET` | `/api/graph/analysis` | 200 | -- | `GraphAnalysis` dict |
-| `POST` | `/api/search` | 200 | `SearchRequest` (query, language?, service_name?, top_k) | `list[dict]` |
-| `POST` | `/api/artifacts` | 200 | `ArtifactRequest` (file_path, service_name?, source?, project_root?) | `dict` (indexed, symbols_found, dependencies_found, errors) |
-| `GET` | `/api/dead-code` | 200 | query: `service_name` | `list[dict]` |
-
-#### Indexing Pipeline (`IncrementalIndexer.index_file`)
-
-7-step pipeline per file:
-1. Detect language (from file extension)
-2. Parse AST with tree-sitter
-3. Extract symbols (classes, functions, methods, etc.)
-4. Resolve imports (Python `import`/`from`, TypeScript `import`)
-5. Update dependency graph (NetworkX DiGraph)
-6. Persist to SQLite (indexed_files, symbols, import_references)
-7. Semantic indexing (generate ChromaDB embeddings)
-
-#### Multi-Language Parsers (`src/codebase_intelligence/parsers/`)
-
-| Parser | Language | Extensions | Symbol Types Extracted |
-|--------|----------|------------|----------------------|
-| `PythonParser` | Python | `.py`, `.pyi` | CLASS, FUNCTION, METHOD (with decorators, docstrings, signatures) |
-| `TypeScriptParser` | TypeScript | `.ts`, `.tsx` | INTERFACE, TYPE, CLASS, FUNCTION, METHOD, VARIABLE (with JSDoc) |
-| `CSharpParser` | C# | `.cs` | CLASS, INTERFACE, ENUM, METHOD (with XML doc, namespace inference) |
-| `GoParser` | Go | `.go` | FUNCTION, METHOD (with receiver type), CLASS (struct), INTERFACE |
-
-All parsers use tree-sitter 0.25.2 API: `Language()`, `Parser(lang)`, `Query(lang, pattern)`, `QueryCursor(query).matches(node)`.
-
-#### Services Layer
-
-| Module | Purpose |
-|--------|---------|
-| `services/ast_parser.py` | `ASTParser` - Language detection + delegation to language-specific parsers |
-| `services/symbol_extractor.py` | `SymbolExtractor` - Converts raw dict output to `SymbolDefinition` instances |
-| `services/import_resolver.py` | `ImportResolver` - Resolves Python/TypeScript imports to file paths (supports relative, aliases, tsconfig paths) |
-| `services/graph_builder.py` | `GraphBuilder` - Builds/maintains NetworkX DiGraph from ImportReference + DependencyEdge |
-| `services/graph_analyzer.py` | `GraphAnalyzer` - PageRank, cycle detection, topological sort, connected components |
-| `services/dead_code_detector.py` | `DeadCodeDetector` - Confidence-level classification (high/medium/low) |
-| `services/semantic_indexer.py` | `SemanticIndexer` - Creates CodeChunks, indexes in ChromaDB, back-links chroma_id in SymbolDB |
-| `services/semantic_searcher.py` | `SemanticSearcher` - Vector similarity search with language/service filters |
-| `services/service_interface_extractor.py` | `ServiceInterfaceExtractor` - AST-based HTTP endpoint + event pattern detection (FastAPI, Express, NestJS, ASP.NET, Go net/http) |
-| `services/incremental_indexer.py` | `IncrementalIndexer` - Orchestrates the 7-step indexing pipeline |
-
-#### Storage Layer
-
-| Module | Purpose |
-|--------|---------|
-| `storage/symbol_db.py` | `SymbolDB` - CRUD for indexed_files, symbols, import_references |
-| `storage/graph_db.py` | `GraphDB` - Dependency edges + NetworkX graph snapshots (via `node_link_data`/`node_link_graph` with `edges="edges"`) |
-| `storage/chroma_store.py` | `ChromaStore` - ChromaDB PersistentClient, collection `"code_chunks"`, `all-MiniLM-L6-v2` embedding model, cosine distance |
-
-#### MCP Server (`src/codebase_intelligence/mcp_server.py`)
-
-Server name: `"Codebase Intelligence"` (FastMCP)
-
-| Tool Name | Parameters | Returns |
-|-----------|------------|---------|
-| `register_artifact` | `file_path, source?, service_name?, project_root?` | `dict` (indexed, symbols_found, deps_found) |
-| `search_semantic` | `query, language?, service_name?, n_results?` | list of `SemanticSearchResult` dicts |
-| `find_definition` | `symbol_name, kind?` | `{"file", "line", "kind", "signature"}` |
-| `find_dependencies` | `file_path, depth?` | `{"imports", "imported_by", "transitive_deps", "circular_deps"}` |
-| `analyze_graph` | -- | `GraphAnalysis` dict |
-| `check_dead_code` | `service_name?` | list of `DeadCodeEntry` dicts |
-| `find_callers` | `file_path` | list of caller file paths |
-| `get_service_interface` | `file_path, service_name` | `ServiceInterface` dict |
-
-**Note:** `search_semantic` accepts `n_results` param, passes it as `top_k` to the searcher internally.
-
-#### MCP Client (`src/codebase_intelligence/mcp_client.py`)
-
-Class: `CodebaseIntelligenceClient`
-
-| Method | MCP Tool Called | Fallback |
-|--------|----------------|----------|
-| `register_artifact(...)` | `register_artifact` | -- |
-| `search_semantic(...)` | `search_semantic` | -- |
-| `find_definition(...)` | `find_definition` | -- |
-| `find_dependencies(...)` | `find_dependencies` | -- |
-| `analyze_graph()` | `analyze_graph` | -- |
-| `check_dead_code(...)` | `check_dead_code` | -- |
-| `get_service_interface(...)` | `get_service_interface` | -- |
-| `generate_codebase_map(...)` | -- | WIRE-010 filesystem fallback |
-| `get_codebase_map_with_fallback(...)` | `analyze_graph` | Falls back to `generate_codebase_map` |
-
-**Retry pattern:** 3 retries, base 1s exponential backoff.
-
----
-
-## Section 1B: Docker Infrastructure
-
-### 1B.1 Compose Architecture (5-Tier Merge)
-
-The system uses a 5-file Docker Compose merge architecture:
-
-| Tier | File | Purpose |
-|------|------|---------|
-| 0 | `docker/docker-compose.infra.yml` | PostgreSQL 16 + Redis 7 on `backend` network |
-| 1 | `docker/docker-compose.build1.yml` | Architect, Contract Engine, Codebase Intel |
-| 2 | `docker/docker-compose.traefik.yml` | Traefik v3.6 reverse proxy on `frontend` network |
-| 3 | `docker/docker-compose.generated.yml` | Generated services: auth, order, notification |
-| 4 | `docker/docker-compose.run4.yml` | Cross-build wiring overrides, debug logging |
-
-Additionally, a root `docker-compose.yml` exists as a standalone development setup.
-
-### 1B.2 Root Compose (`docker-compose.yml`)
-
-Standalone development compose with all three Build 1 services:
-- `architect`: port `8001:8000`, volume `architect-data:/data`
-- `contract-engine`: port `8002:8000`, volume `contract-data:/data`
-- `codebase-intel`: port `8003:8000`, volume `intel-data:/data`
-- Single bridge network `super-team-net`
-- No external dependencies (no PostgreSQL/Redis)
-
-### 1B.3 Tier 0: Infrastructure (`docker/docker-compose.infra.yml`)
-
-| Service | Image | Port | Network | Healthcheck |
-|---------|-------|------|---------|-------------|
-| `postgres` | `postgres:16-alpine` | `5432` | `backend` | `pg_isready -U postgres` every 5s |
-| `redis` | `redis:7-alpine` | `6379` | `backend` | `redis-cli ping` every 5s |
-
-PostgreSQL init: Multiple databases created via `POSTGRES_MULTIPLE_DATABASES` env var: `superteam,auth_db,order_db,notification_db`.
-
-### 1B.4 Tier 1: Build 1 Services (`docker/docker-compose.build1.yml`)
-
-| Service | Container Name | Port | Memory Limit | Depends On | Networks |
-|---------|---------------|------|-------------|------------|----------|
-| `contract-engine` | `super-team-contract-engine` | `8002:8000` | 768m | `postgres` (healthy) | frontend, backend |
-| `architect` | `super-team-architect` | `8001:8000` | 768m | `postgres` (healthy), `contract-engine` (healthy) | frontend, backend |
-| `codebase-intel` | `super-team-codebase-intel` | `8003:8000` | 768m | `postgres` (healthy), `contract-engine` (healthy) | frontend, backend |
-
-**Key dependency chain:** `postgres` -> `contract-engine` -> `architect` + `codebase-intel`
-
-**Environment variables (Build 1):**
-- All services: `DATABASE_URL=postgresql://superteam:superteam_secret@postgres:5432/superteam`
-- Architect: `CONTRACT_ENGINE_URL=http://contract-engine:8000`, `CODEBASE_INTEL_URL=http://codebase-intel:8000`
-- Codebase Intel: `CONTRACT_ENGINE_URL=http://contract-engine:8000`, `CHROMA_PATH=/data/chroma`, `GRAPH_PATH=/data/graph.json`
-
-**Healthchecks:** All use Python urllib: `urllib.request.urlopen('http://localhost:8000/api/health')`, interval 10s, timeout 5s, retries 5.
-
-**Network topology:**
-- `frontend`: bridge (defined in this file)
-- `backend`: external, name `docker_backend` (from Tier 0)
-
-### 1B.5 Tier 2: Traefik (`docker/docker-compose.traefik.yml`)
-
-- Image: `traefik:v3.6`
-- Port: `80:80`
-- Docker provider enabled, `exposedbydefault=false`
-- Entrypoint: `web` at `:80`
-- Networks: `frontend`, `backend`
-- Volume: Docker socket mounted read-only
-
-### 1B.6 Tier 3: Generated Services (`docker/docker-compose.generated.yml`)
-
-| Service | Port | Memory | Depends On | Traefik Route |
-|---------|------|--------|------------|---------------|
-| `auth-service` | `8080` | 768m | `postgres` (healthy) | `/api/auth` |
-| `order-service` | `8080` | 768m | `auth-service` (healthy), `postgres` (healthy) | `/api/orders` |
-| `notification-service` | `8080` | 768m | `order-service` (healthy), `redis` (healthy) | `/api/notifications` |
-
-**Dependency chain:** `postgres` -> `auth-service` -> `order-service` -> `notification-service` (also needs `redis`)
-
-### 1B.7 Tier 4: Overrides (`docker/docker-compose.run4.yml`)
-
-- Adds `frontend` + `backend` networks to Build 1 services
-- Adds Traefik labels (PathPrefix routing) for Build 1 services:
-  - Architect: `/api/architect`
-  - Contract Engine: `/api/contracts`
-  - Codebase Intelligence: `/api/codebase`
-- Sets `LOG_LEVEL=DEBUG` for all services
-- Enables Postgres statement logging and Redis debug logging
-- Adds full environment variables for generated services (DATABASE_URL, JWT_SECRET, AUTH_SERVICE_URL)
-
-### 1B.8 Dockerfiles
-
-All three Build 1 services follow the same pattern:
-
-| Property | Value |
-|----------|-------|
-| Base image | `python:3.12-slim` |
-| Workdir | `/app` |
-| Install | `requirements.txt` via pip |
-| Copy | Full project source (`src/`, `pyproject.toml`, etc.) |
-| CMD | `uvicorn src.<service>.main:app --host 0.0.0.0 --port 8000` |
-| User | `appuser` (non-root, UID 1000) |
-
-**Codebase Intelligence Dockerfile** has an additional step: pre-downloads the ChromaDB ONNX embedding model at build time to avoid runtime downloads.
-
-### 1B.9 Memory Budget
-
-| Component | Memory | Count | Total |
-|-----------|--------|-------|-------|
-| Build 1 services | 768m each | 3 | 2.3 GB |
-| Generated services | 768m each | 3 | 2.3 GB |
-| PostgreSQL | 256m | 1 | 256 MB |
-| Redis | 128m | 1 | 128 MB |
-| Traefik | 128m | 1 | 128 MB |
-| **Total** | | | **~5.1 GB** |
-
----
-
-## Section 1C: Test Infrastructure
-
-### 1C.1 Test Layout Overview
-
-```
-tests/
-  conftest.py              -- Root fixtures (shared models, connection pool, sample data)
-  __init__.py
-  fixtures/                -- Static test data files
-    sample_prd.md
-    sample_openapi.yaml
-    sample_pact.json
-    sample_docker_compose.yml
-  test_architect/          -- Architect service unit tests (6 files)
-  test_contract_engine/    -- Contract Engine unit tests (11 files)
-  test_codebase_intelligence/ -- Codebase Intel unit tests (15 files)
-  test_mcp/                -- MCP server integration tests (3 files)
-  test_integration/        -- Cross-service integration tests (6 files)
-  test_shared/             -- Shared module unit tests (6 files)
-  e2e/api/                 -- End-to-end HTTP tests (4 files)
-  build3/                  -- Build 3 (orchestrator) tests (34 files)
-  run4/                    -- Run 4 verification tests (11 files)
-  benchmarks/              -- Performance benchmarks (conftest + modules)
-```
-
-### 1C.2 Test Counts
-
-| Test Category | File Count | Approx. Test Functions |
-|---------------|-----------|----------------------|
-| Build 1 unit/integration/e2e | 52 | ~989 |
-| Build 3 tests | 34 | ~400+ (estimated) |
-| Run 4 tests | 11 | ~200+ (estimated) |
-| Benchmarks | 3+ | ~50+ (estimated) |
-| **Total** | **~100** | **~1000+** |
-
-### 1C.3 Root Conftest (`tests/conftest.py`)
-
-**Fixtures provided:**
-- `tmp_db_path` -- Temporary SQLite path
-- `connection_pool` -- `ConnectionPool` with temp DB, auto-closed
-- `sample_service_stack` -- `ServiceStack(python, fastapi, sqlite)`
-- `sample_service_definition` -- `ServiceDefinition` for user-service
-- `sample_entity_field` -- `EntityField(email, string, required)`
-- `sample_state_machine` -- 3-state (active/inactive/suspended) state machine
-- `sample_domain_entity` -- `DomainEntity` for User
-- `sample_domain_relationship` -- Order REFERENCES User
-- `sample_contract_entry` -- OpenAPI contract for user-service
-- `sample_symbol_definition` -- `SymbolDefinition` for AuthService class
-- `sample_health_status` -- Healthy test-service
-- `mock_env_vars` -- Monkeypatches LOG_LEVEL, DATABASE_PATH, etc.
-
-### 1C.4 E2E Conftest (`tests/e2e/api/conftest.py`)
-
-- Auto-skip when no service is reachable (`_any_service_reachable()`)
-- Service URLs configurable via env vars (`ARCHITECT_URL`, `CONTRACT_ENGINE_URL`, `CODEBASE_INTEL_URL`)
-- Default ports: `8001`, `8002`, `8003`
-- Session-scoped httpx clients for each service
-- Sample data: PRD text, OpenAPI spec, AsyncAPI spec, Python source code (base64 encoded)
-- `wait_for_service()` helper with configurable timeout
-
-### 1C.5 Build 3 Conftest (`tests/build3/conftest.py`)
-
-**Key autouse fixtures (applied globally to Build 3 tests):**
-1. `_patch_state_machine_states` -- Removes `on_enter` callbacks from state machine states
-2. `_patch_contract_violation_defaults` -- Makes `ContractViolation` accept missing `service`/`endpoint` fields
-3. `_patch_cost_tracker_compat` -- Adds `start_phase`/`end_phase`/`phase_costs` shims to `PipelineCostTracker`
-4. `_patch_integration_config_compat` -- Adds `compose_timeout`/`health_timeout` aliases
-5. `_patch_builder_config_compat` -- Adds `timeout` alias (maps to `timeout_per_builder`)
-6. `_patch_architect_config_compat` -- Adds `retries` alias (maps to `max_retries`)
-
-**Sample fixtures:** `ServiceInfo`, `BuilderResult`, `PipelineState`, `SuperOrchestratorConfig`, `IntegrationReport`, `QualityGateReport`
-
-### 1C.6 Run 4 Conftest (`tests/run4/conftest.py`)
-
-- `MockToolResult` / `MockTextContent` -- Lightweight MCP result stubs
-- `make_mcp_result(data, is_error)` -- Builds mock MCP tool results
-- Session-scoped: `run4_config`, `sample_prd_text`, `build1_root`
-- `StdioServerParameters`-compatible dicts for each MCP server
-- `mock_mcp_session` -- `AsyncMock` simulating an MCP `ClientSession`
-
-### 1C.7 Benchmarks Conftest (`tests/benchmarks/conftest.py`)
-
-- Registers `benchmark` marker
-- `_ensure_cost_tracker_shims` -- Same as Build 3 shims (prevents AttributeError)
-- `consolidated_benchmark_report` -- Session-scoped finalizer that prints a formatted benchmark summary
-
-### 1C.8 Test Module Coverage by Service
-
-**Architect (`tests/test_architect/`):**
-- `test_prd_parser.py` -- PRD parsing (entity extraction, relationships, contexts)
-- `test_service_boundary.py` -- Boundary identification algorithm
-- `test_domain_modeler.py` -- Domain model construction
-- `test_contract_generator.py` -- OpenAPI stub generation
-- `test_validator.py` -- 7-check validation
-- `test_routers.py` -- HTTP endpoint tests via TestClient
-
-**Contract Engine (`tests/test_contract_engine/`):**
-- `test_contract_store.py` -- CRUD operations
-- `test_openapi_validator.py` -- OpenAPI spec validation
-- `test_asyncapi_validator.py` -- AsyncAPI spec validation
-- `test_asyncapi_parser.py` -- AsyncAPI parsing
-- `test_breaking_change_detector.py` -- Breaking change detection
-- `test_compliance_checker.py` -- Compliance checking
-- `test_implementation_tracker.py` -- Implementation tracking
-- `test_schema_registry.py` -- Schema registry operations
-- `test_test_generator.py` -- Test generation
-- `test_version_manager.py` -- Version management
-- `test_routers.py` -- HTTP endpoint tests
-- `test_test_routers.py` -- Test/compliance router tests
-
-**Codebase Intelligence (`tests/test_codebase_intelligence/`):**
-- `test_ast_parser.py` -- Multi-language AST parsing
-- `test_python_parser.py` -- Python symbol extraction
-- `test_typescript_parser.py` -- TypeScript symbol extraction
-- `test_csharp_parser.py` -- C# symbol extraction
-- `test_go_parser.py` -- Go symbol extraction
-- `test_symbol_extractor.py` -- Symbol model conversion
-- `test_import_resolver.py` -- Import resolution
-- `test_graph_builder.py` -- Graph construction
-- `test_graph_analyzer.py` -- Graph analysis
-- `test_dead_code_detector.py` -- Dead code detection
-- `test_semantic_indexer.py` -- Vector indexing
-- `test_semantic_searcher.py` -- Vector search
-- `test_incremental_indexer_m6.py` -- Full pipeline
-- `test_routers.py` -- HTTP endpoint tests
-- `test_performance.py` -- Performance tests
-
-**MCP (`tests/test_mcp/`):**
-- `test_architect_mcp.py` -- Architect MCP server tool tests
-- `test_contract_engine_mcp.py` -- Contract Engine MCP server tool tests
-- `test_codebase_intel_mcp.py` -- Codebase Intel MCP server tool tests
-
-**Integration (`tests/test_integration/`):**
-- `test_architect_to_contracts.py` -- Architect -> Contract Engine flow
-- `test_codebase_indexing.py` -- Codebase indexing pipeline
-- `test_docker_compose.py` -- Docker Compose validation
-- `test_pipeline_parametrized.py` -- Parametrized pipeline tests
-- `test_5prd_pipeline.py` -- 5-PRD pipeline test
-- `test_svc_contracts.py` -- Service contract verification
-
-**Shared (`tests/test_shared/`):**
-- `test_config.py` -- Configuration loading
-- `test_constants.py` -- Constants validation
-- `test_db_connection.py` -- ConnectionPool tests
-- `test_errors.py` -- Error hierarchy tests
-- `test_models.py` -- Pydantic model tests
-- `test_schema.py` -- Database schema tests
-
----
-
-## Section 1D: Known Integration Points
-
-### 1D.1 Service-to-Service HTTP Calls
-
-| Caller | Target | Endpoint | Purpose |
-|--------|--------|----------|---------|
-| Architect MCP Server | Contract Engine | `GET /api/contracts?service_name={name}` | `get_contracts_for_service` tool |
-| Architect Config | Contract Engine | `http://contract-engine:8000` (env `CONTRACT_ENGINE_URL`) | Cross-service URL |
-| Architect Config | Codebase Intel | `http://codebase-intel:8000` (env `CODEBASE_INTEL_URL`) | Cross-service URL |
-| Codebase Intel Config | Contract Engine | `http://contract-engine:8000` (env `CONTRACT_ENGINE_URL`) | Cross-service URL |
-
-### 1D.2 MCP Tool Dependencies (Inter-Service)
-
-| Consumer (MCP Client) | Provider (MCP Server) | Tools Used |
-|------------------------|----------------------|------------|
-| Build 2 Builders -> `ArchitectClient` | Architect | `decompose`, `get_service_map`, `get_domain_model`, `get_contracts_for_service` |
-| Build 2 Builders -> `ContractEngineClient` | Contract Engine | `create_contract`, `list_contracts`, `get_contract`, `validate_spec`, `mark_implemented`, `generate_tests`, etc. |
-| Build 2 Builders -> `CodebaseIntelligenceClient` | Codebase Intelligence | `register_artifact`, `search_semantic`, `find_definition`, `find_dependencies`, `analyze_graph`, `check_dead_code`, `get_service_interface` |
-
-### 1D.3 Fallback Patterns (WIRE-009/010/011)
-
-| Wire ID | Client | MCP Tool | Fallback Method |
-|---------|--------|----------|-----------------|
-| WIRE-009 | `ContractEngineClient` | `list_contracts` | `run_api_contract_scan()` -- filesystem-based contract scanning |
-| WIRE-010 | `CodebaseIntelligenceClient` | `analyze_graph` | `generate_codebase_map()` -- filesystem-based codebase mapping |
-| WIRE-011 | `ArchitectClient` | `decompose` | `decompose_prd_basic()` -- basic filesystem-based PRD decomposition |
-
-All fallbacks are triggered when MCP connection fails after retries.
-
-### 1D.4 Shared Database Dependencies
-
-| Database | Services | Tables |
-|----------|----------|--------|
-| Architect SQLite | Architect | `service_maps`, `domain_models`, `decomposition_runs` |
-| Contracts SQLite | Contract Engine | `build_cycles`, `contracts`, `contract_versions`, `breaking_changes`, `implementations`, `test_suites`, `shared_schemas`, `schema_consumers` |
-| Symbols SQLite | Codebase Intelligence | `indexed_files`, `symbols`, `dependency_edges`, `import_references`, `graph_snapshots` |
-
-Each service owns its own SQLite database. No shared database between Build 1 services.
-
-### 1D.5 Startup Order
-
-Required startup order based on `depends_on` chains in `docker-compose.build1.yml`:
-
-```
-postgres (healthy) -> contract-engine (healthy) -> architect
-                                                -> codebase-intel
-```
-
-The `architect` and `codebase-intel` services both depend on `contract-engine` being healthy.
-
----
-
-## Section 1E: Known API Mismatches Verification
-
-This section verifies the 5 API mismatches reported in a prior analysis (SVC-003, SVC-005, SVC-007, SVC-009, SVC-010).
-
-### SVC-003: `generate_tests` Return Type
-
-**Prior Report:** MCP server returns string (test_code), Build 2 mcp_client expects string.
-
-**Verification:**
-- `src/contract_engine/mcp_server.py` -- The `generate_tests` tool:
-  ```python
-  result = test_generator.generate(contract, pool)
-  return result.test_code  # Returns str
-  ```
-- `src/contract_engine/mcp_client.py` -- `ContractEngineClient.generate_tests()`:
-  ```python
-  return raw_text  # Returns str (raw text from MCP)
-  ```
-
-**Status: FIXED.** Both sides agree on `str` return type. The MCP server returns `result.test_code` (a string), and the client returns the raw text string directly.
-
----
-
-### SVC-005: `mark_implemented` Response Field Name
-
-**Prior Report:** MCP server returns `{"total"}` but Pydantic model has `total_implementations`.
-
-**Verification:**
-- `src/shared/models/contracts.py` -- `MarkResponse`:
-  ```python
-  class MarkResponse(BaseModel):
-      marked: int
-      total_implementations: int
-      all_implemented: bool
-  ```
-- `src/contract_engine/mcp_server.py` (lines 272-276) -- `mark_implemented` tool:
-  ```python
-  return {
-      "marked": result.marked,
-      "total": result.total_implementations,  # KEY DIFFERENCE
-      "all_implemented": result.all_implemented,
-  }
-  ```
-- `src/contract_engine/routers/implementations.py` -- HTTP endpoint returns `MarkResponse` directly (with field `total_implementations`).
-- `src/contract_engine/services/implementation_tracker.py` -- `mark_implemented()` returns `MarkResponse(marked=..., total_implementations=..., all_implemented=...)`.
-
-**Status: CONFIRMED MISMATCH.**
-
-The MCP server manually builds a dict with key `"total"` instead of using the `MarkResponse` model's field name `"total_implementations"`. This means:
-- **HTTP consumers** see `{"marked": N, "total_implementations": N, "all_implemented": bool}` (correct per MarkResponse model)
-- **MCP consumers** see `{"marked": N, "total": N, "all_implemented": bool}` (uses `"total"` not `"total_implementations"`)
-
-Any MCP client code that accesses `result["total_implementations"]` will get a `KeyError`. MCP clients must use `result["total"]`.
-
-The `ContractEngineClient.mark_implemented()` in `mcp_client.py` does:
 ```python
-data = json.loads(result.content[0].text)
-return data  # Returns the raw dict with "total" key
+async def _scan_file(scanner, tmp_path, filename, content) -> list:
+    f = tmp_path / filename
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(content, encoding="utf-8")
+    return await scanner.scan(tmp_path)
 ```
-So the MCP client passes through the raw dict. Downstream consumers expecting `total_implementations` will break.
 
-**Recommendation:** Either change the MCP server to use `result.model_dump()` (which would produce `total_implementations`), or update the MCP client to normalize the key.
+### 1H.4 Graph Builder Test Pattern
 
----
+**File:** `tests/test_codebase_intelligence/test_graph_builder.py`
 
-### SVC-007: `find_definition` Return Field Names
+Pattern:
+- Sync tests (graph builder is synchronous)
+- Factory helpers for creating test `ImportReference` and `DependencyEdge` objects
+- Class-per-behavior organization
+- Tests graph operations: add node, add edge, cycle detection, connected components
 
-**Prior Report:** MCP server used `file_path` and `line_start` instead of `file` and `line`.
+### 1H.5 Test Pattern Summary
 
-**Verification:**
-- `src/codebase_intelligence/mcp_server.py` -- `find_definition` tool:
-  ```python
-  return {
-      "file": sym.file_path,
-      "line": sym.line_start,
-      "kind": sym.kind.value if isinstance(sym.kind, SymbolKind) else sym.kind,
-      "signature": sym.signature,
-  }
-  ```
+| Pattern | Example | Usage |
+|---------|---------|-------|
+| Async scanner test | `test_security_scanner.py` | All quality gate scanner tests |
+| Sync unit test | `test_graph_builder.py` | Pure function / class tests |
+| Fixture per instance | `@pytest.fixture; def scanner()` | Fresh scanner per test |
+| _scan_file helper | Write file, run scanner, return results | Scanner integration tests |
+| _codes helper | Extract violation codes from list | Assertion shorthand |
+| sample_ fixtures | `sample_service_definition` | Shared test data |
+| tmp_path isolation | `connection_pool(tmp_path)` | Database isolation |
+| monkeypatch env | `mock_env_vars` | Environment variable testing |
 
-**Status: FIXED.** The MCP server returns `{"file", "line", "kind", "signature"}` as expected. Uses `file` (not `file_path`) and `line` (not `line_start`).
+### 1H.6 Mock and Assertion Patterns
 
----
-
-### SVC-009: `find_dependencies` Return Field Names
-
-**Prior Report:** MCP server returned wrong field names.
-
-**Verification:**
-- `src/codebase_intelligence/mcp_server.py` -- `find_dependencies` tool:
-  ```python
-  return {
-      "imports": forward_deps,
-      "imported_by": reverse_deps,
-      "transitive_deps": transitive,
-      "circular_deps": circular_deps,
-  }
-  ```
-
-**Status: FIXED.** The MCP server returns `{"imports", "imported_by", "transitive_deps", "circular_deps"}` as expected.
+- **MCP mocks**: `AsyncMock` for `ClientSession` (in `tests/run4/conftest.py`)
+- **Tool result mocks**: `MockToolResult` / `MockTextContent` classes
+- **Database mocks**: Real SQLite with `tmp_path` (not mocked)
+- **ChromaDB mocks**: `MagicMock` for collection operations
+- **Assertion style**: `assert` statements with descriptive messages, `pytest.raises` for exceptions
 
 ---
 
-### SVC-010: `search_semantic` Parameter Name
+## DATA GAP Summary
 
-**Prior Report:** MCP server tool used wrong parameter name for result count.
+| ID | Gap Description | Impact | Location |
+|----|----------------|--------|----------|
+| **DATA GAP-01** | `FixPassResult` is NOT persisted to disk | Fix pass history lost between pipeline restarts; no learning from past fix attempts | `src/run4/fix_pass.py` line 560 -- `FixPassResult` only returned in-memory from `execute_fix_pass()` |
+| **DATA GAP-02** | `LayerResult` is transient within `QualityGateReport` | Individual layer scan details not available for pattern learning after pipeline completes | `src/build3_shared/models.py` line 91 -- nested in `QualityGateReport.layers` dict |
+| **DATA GAP-03** | `ConvergenceResult` not independently persisted | Convergence trends across builds cannot be analyzed | `src/run4/fix_pass.py` line 372 -- only stored inside `FixPassResult.convergence` |
+| **DATA GAP-04** | `FixPassMetrics` not independently persisted | Fix effectiveness trends not available for pattern learning | `src/run4/fix_pass.py` line 252 -- only stored inside `FixPassResult.metrics` |
+| **DATA GAP-05** | `agent_team`/`agent_team_v15` source not in repository | Cannot analyze builder internals for pattern injection points | External dependencies, imported at runtime in `src/super_orchestrator/pipeline.py` |
+| **DATA GAP-06** | Priority classification decisions not logged to DB | Cannot learn from past priority assignments to improve future classification | `src/run4/fix_pass.py` `classify_priority()` line 153 -- returns string, no persistence |
+| **DATA GAP-07** | Violation snapshots not persisted between pipeline runs | Cannot compare violation trends across builds | `src/run4/fix_pass.py` `take_violation_snapshot()` line 32 -- returns dict, stored only in `FixPassResult` |
+| **DATA GAP-08** | No cross-build pattern storage | Patterns from successful builds (architect decisions, fix strategies, scan results) are not stored for reuse | No existing storage for build-over-build learning |
+| **DATA GAP-09** | Scanner results not indexed in ChromaDB | Cannot perform semantic search over past scan results | `SecurityScanner` returns `list[ScanViolation]` but violations are not vectorized |
 
-**Verification:**
-- `src/codebase_intelligence/mcp_server.py` -- `search_semantic` tool signature:
-  ```python
-  @mcp.tool()
-  def search_semantic(
-      query: str,
-      language: str = "",
-      service_name: str = "",
-      n_results: int = 10,
-  ) -> list[dict]:
-  ```
-  Internally passes `n_results` as `top_k` to the searcher:
-  ```python
-  results = searcher.search(query=query, ..., top_k=n_results)
-  ```
+### Critical Observations
 
-- `src/codebase_intelligence/mcp_client.py` -- `CodebaseIntelligenceClient.search_semantic()`:
-  ```python
-  result = await session.call_tool("search_semantic", arguments={
-      "query": query,
-      "n_results": max_results,
-      ...
-  })
-  ```
+1. **`PersistenceConfig` already exists** in `src/super_orchestrator/config.py` (lines 72-79) with `enabled: bool = False`, `db_path`, `chroma_path`, `max_patterns_per_injection`, and `min_occurrences_for_promotion`. This is the intended entry point for the Persistent Intelligence Layer.
 
-**Status: FIXED.** The MCP tool accepts `n_results` and the client sends `n_results`. Internally mapped to `top_k` for the searcher.
+2. **The 6-step SQLite pattern** (Phase 1B.2) is well-established and should be followed for the persistence database.
+
+3. **The MCP server template** (Phase 1F.2) is consistent across all 4 existing servers and should be replicated for any persistence MCP tools.
+
+4. **Graph RAG already demonstrates cross-database reads** (Phase 1F.4) -- the persistence layer can follow the same pattern to read from architect, contract, and symbol databases.
+
+5. **`PipelineState.phase_artifacts`** (dict field) is the primary mechanism for passing data between phases. The persistence layer should inject context via this field.
+
+6. **All 9 DATA GAPs** represent opportunities for the Persistent Intelligence Layer to capture, store, and learn from pipeline execution data.
 
 ---
 
-### Mismatch Summary Table
-
-| ID | Issue | Status | Severity | Location |
-|----|-------|--------|----------|----------|
-| SVC-003 | `generate_tests` return type | **FIXED** | -- | `mcp_server.py` returns `str`, client expects `str` |
-| SVC-005 | `mark_implemented` field name `total` vs `total_implementations` | **OPEN** | Medium | `src/contract_engine/mcp_server.py` line 274 |
-| SVC-007 | `find_definition` field names | **FIXED** | -- | Returns `file`/`line` correctly |
-| SVC-009 | `find_dependencies` field names | **FIXED** | -- | Returns correct field names |
-| SVC-010 | `search_semantic` parameter name | **FIXED** | -- | Accepts `n_results` correctly |
-
----
-
-## Appendix A: Complete File Inventory
-
-### Architect Service
-
-| File | Lines | Purpose |
-|------|-------|---------|
-| `src/architect/__init__.py` | -- | Package init |
-| `src/architect/main.py` | ~80 | FastAPI app + lifespan |
-| `src/architect/config.py` | ~10 | Re-exports ArchitectConfig |
-| `src/architect/mcp_server.py` | ~180 | 4 MCP tools |
-| `src/architect/mcp_client.py` | ~200 | MCP client with fallback |
-| `src/architect/routers/health.py` | ~30 | Health endpoint |
-| `src/architect/routers/decomposition.py` | ~60 | Decompose endpoint |
-| `src/architect/routers/service_map.py` | ~30 | Service map endpoint |
-| `src/architect/routers/domain_model.py` | ~30 | Domain model endpoint |
-| `src/architect/services/prd_parser.py` | ~600 | PRD text parsing |
-| `src/architect/services/service_boundary.py` | ~300 | Boundary identification |
-| `src/architect/services/domain_modeler.py` | ~200 | Domain model construction |
-| `src/architect/services/contract_generator.py` | ~250 | OpenAPI stub generation |
-| `src/architect/services/validator.py` | ~200 | 7-check validation |
-| `src/architect/storage/service_map_store.py` | ~80 | Service map persistence |
-| `src/architect/storage/domain_model_store.py` | ~80 | Domain model persistence |
-
-### Contract Engine Service
-
-| File | Lines | Purpose |
-|------|-------|---------|
-| `src/contract_engine/__init__.py` | -- | Package init |
-| `src/contract_engine/main.py` | ~80 | FastAPI app + lifespan |
-| `src/contract_engine/config.py` | ~10 | Re-exports ContractEngineConfig |
-| `src/contract_engine/mcp_server.py` | ~320 | 10 MCP tools |
-| `src/contract_engine/mcp_client.py` | ~250 | MCP client with fallback |
-| `src/contract_engine/routers/health.py` | ~30 | Health endpoint |
-| `src/contract_engine/routers/contracts.py` | ~80 | Contract CRUD endpoints |
-| `src/contract_engine/routers/validation.py` | ~40 | Validation endpoint |
-| `src/contract_engine/routers/breaking_changes.py` | ~50 | Breaking changes endpoint |
-| `src/contract_engine/routers/implementations.py` | ~50 | Implementation tracking endpoints |
-| `src/contract_engine/routers/tests.py` | ~60 | Test generation/compliance endpoints |
-| `src/contract_engine/services/contract_store.py` | ~150 | Contract CRUD with upsert |
-| `src/contract_engine/services/openapi_validator.py` | ~100 | OpenAPI validation |
-| `src/contract_engine/services/asyncapi_validator.py` | ~100 | AsyncAPI validation |
-| `src/contract_engine/services/asyncapi_parser.py` | ~350 | AsyncAPI 2.x/3.x parser |
-| `src/contract_engine/services/breaking_change_detector.py` | ~300 | Deep-diff breaking changes |
-| `src/contract_engine/services/compliance_checker.py` | ~400 | Runtime compliance validation |
-| `src/contract_engine/services/implementation_tracker.py` | ~150 | Implementation tracking |
-| `src/contract_engine/services/schema_registry.py` | ~150 | Shared schema management |
-| `src/contract_engine/services/test_generator.py` | ~400 | Schemathesis test generation |
-| `src/contract_engine/services/version_manager.py` | ~150 | Build cycle immutability |
-
-### Codebase Intelligence Service
-
-| File | Lines | Purpose |
-|------|-------|---------|
-| `src/codebase_intelligence/__init__.py` | ~3 | Package init |
-| `src/codebase_intelligence/main.py` | ~120 | FastAPI app + complex lifespan |
-| `src/codebase_intelligence/config.py` | ~10 | Re-exports CodebaseIntelConfig |
-| `src/codebase_intelligence/mcp_server.py` | ~250 | 8 MCP tools |
-| `src/codebase_intelligence/mcp_client.py` | ~250 | MCP client with fallback |
-| `src/codebase_intelligence/routers/__init__.py` | ~17 | Router exports |
-| `src/codebase_intelligence/routers/health.py` | ~60 | Health endpoint (SQLite + ChromaDB) |
-| `src/codebase_intelligence/routers/symbols.py` | ~58 | Symbol query endpoint |
-| `src/codebase_intelligence/routers/dependencies.py` | ~47 | Dependency/graph endpoints |
-| `src/codebase_intelligence/routers/search.py` | ~36 | Semantic search endpoint |
-| `src/codebase_intelligence/routers/artifacts.py` | ~41 | Artifact indexing endpoint |
-| `src/codebase_intelligence/routers/dead_code.py` | ~45 | Dead code detection endpoint |
-| `src/codebase_intelligence/services/ast_parser.py` | ~129 | Multi-language AST parser |
-| `src/codebase_intelligence/services/symbol_extractor.py` | ~101 | Symbol model conversion |
-| `src/codebase_intelligence/services/import_resolver.py` | ~603 | Import resolution (Python + TypeScript) |
-| `src/codebase_intelligence/services/graph_builder.py` | ~154 | NetworkX DiGraph construction |
-| `src/codebase_intelligence/services/graph_analyzer.py` | ~151 | Graph analysis (PageRank, cycles, topo sort) |
-| `src/codebase_intelligence/services/dead_code_detector.py` | ~186 | Dead code with confidence levels |
-| `src/codebase_intelligence/services/semantic_indexer.py` | ~139 | ChromaDB vector indexing |
-| `src/codebase_intelligence/services/semantic_searcher.py` | ~166 | ChromaDB vector search |
-| `src/codebase_intelligence/services/service_interface_extractor.py` | ~1279 | HTTP + event pattern detection (4 languages) |
-| `src/codebase_intelligence/services/incremental_indexer.py` | ~159 | 7-step indexing pipeline |
-| `src/codebase_intelligence/parsers/python_parser.py` | ~389 | Python AST symbol extraction |
-| `src/codebase_intelligence/parsers/typescript_parser.py` | ~360 | TypeScript/TSX symbol extraction |
-| `src/codebase_intelligence/parsers/csharp_parser.py` | ~268 | C# symbol extraction |
-| `src/codebase_intelligence/parsers/go_parser.py` | ~261 | Go symbol extraction |
-| `src/codebase_intelligence/storage/chroma_store.py` | ~188 | ChromaDB vector storage |
-| `src/codebase_intelligence/storage/graph_db.py` | ~174 | Graph edge/snapshot SQLite storage |
-| `src/codebase_intelligence/storage/symbol_db.py` | ~270 | Symbol/file/import SQLite storage |
-
-### Shared Modules
-
-| File | Lines | Purpose |
-|------|-------|---------|
-| `src/shared/__init__.py` | -- | Package init |
-| `src/shared/config.py` | ~80 | Base + derived Pydantic Settings configs |
-| `src/shared/constants.py` | ~30 | Service names, ports, version |
-| `src/shared/errors.py` | ~100 | Error hierarchy + exception handler |
-| `src/shared/logging.py` | ~80 | JSON formatter + trace ID middleware |
-| `src/shared/utils.py` | ~40 | File/hash/JSON utilities |
-| `src/shared/db/connection.py` | ~80 | Thread-local SQLite ConnectionPool |
-| `src/shared/db/schema.py` | ~200 | Database schema initializers |
-| `src/shared/models/architect.py` | ~120 | Architect data models |
-| `src/shared/models/contracts.py` | ~180 | Contract data models |
-| `src/shared/models/codebase.py` | ~150 | Codebase intelligence data models |
-| `src/shared/models/common.py` | ~40 | Common shared models |
-
----
-
-## Appendix B: Technology Stack Summary
-
-| Category | Technology | Version |
-|----------|-----------|---------|
-| Language | Python | 3.12 |
-| Web Framework | FastAPI | 0.129.0 |
-| ASGI Server | Uvicorn | >=0.30.0 |
-| Data Validation | Pydantic | >=2.5.0 |
-| Settings | Pydantic Settings | >=2.1.0 |
-| HTTP Client | httpx | >=0.27.0 |
-| AST Parsing | tree-sitter | 0.25.2 |
-| Vector DB | ChromaDB | 1.5.0 |
-| Graph Analysis | NetworkX | 3.6.1 |
-| Inter-Service Protocol | MCP (Model Context Protocol) | >=1.25,<2 |
-| API Testing | Schemathesis | 4.10.1 |
-| OpenAPI Validation | openapi-spec-validator | >=0.7.0 |
-| $ref Resolution | prance | >=25.0.0 |
-| YAML | PyYAML | >=6.0 |
-| JSON Schema | jsonschema | >=4.20.0 |
-| State Machines | transitions | >=0.9.0 |
-| CLI | Typer | >=0.12.0 |
-| Console Output | Rich | >=13.0.0 |
-| Database | SQLite (WAL mode) | Built-in |
-| Embedding Model | all-MiniLM-L6-v2 (ONNX) | Via ChromaDB |
-| Container Runtime | Docker | -- |
-| Container Orchestration | Docker Compose | v2 |
-| Reverse Proxy | Traefik | v3.6 |
-| Infrastructure DB | PostgreSQL | 16 (alpine) |
-| Infrastructure Cache | Redis | 7 (alpine) |
-
----
-
-*End of Architecture Report. This document is the single source of truth for all Build 1 verification agents.*
+*End of Architecture Report. This document is the single source of truth for all Persistent Intelligence Layer implementation agents.*

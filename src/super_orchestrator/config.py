@@ -69,6 +69,17 @@ class GraphRAGConfig:
 
 
 @dataclass
+class PersistenceConfig:
+    """Configuration for the persistent intelligence layer."""
+
+    enabled: bool = False
+    db_path: str = ".super-orchestrator/persistence.db"
+    chroma_path: str = ".super-orchestrator/pattern-store"
+    max_patterns_per_injection: int = 5
+    min_occurrences_for_promotion: int = 10
+
+
+@dataclass
 class SuperOrchestratorConfig:
     """Top-level configuration composing all sub-configs."""
 
@@ -77,6 +88,7 @@ class SuperOrchestratorConfig:
     integration: IntegrationConfig = field(default_factory=IntegrationConfig)
     quality_gate: QualityGateConfig = field(default_factory=QualityGateConfig)
     graph_rag: GraphRAGConfig = field(default_factory=GraphRAGConfig)
+    persistence: PersistenceConfig = field(default_factory=PersistenceConfig)
     budget_limit: float | None = None
     depth: str = "standard"
     phase_timeouts: dict[str, int] = field(default_factory=dict)
@@ -84,6 +96,34 @@ class SuperOrchestratorConfig:
     agent_team_config_path: str = ""
     mode: str = "auto"  # "docker", "mcp", or "auto" (auto-detect)
     output_dir: str = ".super-orchestrator"
+
+
+# Depth-gating: features that are only enabled at certain depth levels.
+# Maps feature → set of depths where the feature should be enabled.
+_DEPTH_GATES: dict[str, set[str]] = {
+    "persistence": {"thorough", "exhaustive"},
+}
+
+
+def _apply_depth_gates(cfg: SuperOrchestratorConfig) -> None:
+    """Override feature flags based on the top-level ``depth`` setting.
+
+    Only applies when the user has not explicitly set the feature in YAML.
+    For persistence: quick/standard → disabled, thorough/exhaustive → enabled.
+    """
+    depth = cfg.depth
+    if depth in _DEPTH_GATES.get("persistence", set()):
+        # Enable persistence at thorough/exhaustive unless user explicitly disabled
+        # (We enable by default at these depths; explicit YAML 'enabled: false' still wins
+        # because the YAML value overwrites the dataclass default before we get here.)
+        if cfg.persistence.enabled is False:
+            # Check if this is still the dataclass default (False) — if YAML didn't
+            # set it, we auto-enable.  We rely on a sentinel to distinguish "user set
+            # False" from "default False".  Since we can't add a sentinel to an existing
+            # dataclass without breaking things, we use a simple heuristic: if the user
+            # provided a persistence section in YAML at all, respect their explicit
+            # setting; otherwise auto-enable.
+            cfg.persistence.enabled = True
 
 
 def load_super_config(path: Path | str | None = None) -> SuperOrchestratorConfig:
@@ -119,17 +159,25 @@ def load_super_config(path: Path | str | None = None) -> SuperOrchestratorConfig
     integration_raw = raw.get("integration", {})
     quality_gate_raw = raw.get("quality_gate", {})
     graph_rag_raw = raw.get("graph_rag", {})
+    persistence_raw = raw.get("persistence", {})
 
     top_level = _pick(raw, SuperOrchestratorConfig)
     # Remove sub-config keys that need special handling
-    for key in ("architect", "builder", "integration", "quality_gate", "graph_rag"):
+    for key in ("architect", "builder", "integration", "quality_gate", "graph_rag", "persistence"):
         top_level.pop(key, None)
 
-    return SuperOrchestratorConfig(
+    cfg = SuperOrchestratorConfig(
         architect=ArchitectConfig(**_pick(architect_raw, ArchitectConfig)),
         builder=BuilderConfig(**_pick(builder_raw, BuilderConfig)),
         integration=IntegrationConfig(**_pick(integration_raw, IntegrationConfig)),
         quality_gate=QualityGateConfig(**_pick(quality_gate_raw, QualityGateConfig)),
         graph_rag=GraphRAGConfig(**_pick(graph_rag_raw, GraphRAGConfig)),
+        persistence=PersistenceConfig(**_pick(persistence_raw, PersistenceConfig)),
         **top_level,
     )
+
+    # Apply depth-gating unless the user explicitly configured persistence
+    if "persistence" not in raw or "enabled" not in raw.get("persistence", {}):
+        _apply_depth_gates(cfg)
+
+    return cfg

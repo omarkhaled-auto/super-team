@@ -33,6 +33,7 @@ class ContractFixLoop:
         else:
             self.timeout = timeout
         self._config = config
+        self._fix_context: str = ""  # Injected by caller when persistence is enabled
 
     # ------------------------------------------------------------------
     # Classification
@@ -103,7 +104,7 @@ class ContractFixLoop:
             }
             for v in violations
         ]
-        write_fix_instructions(builder_dir, violation_dicts)
+        write_fix_instructions(builder_dir, violation_dicts, fix_context=self._fix_context)
 
         # ---- Launch builder subprocess --------------------------------
         proc: asyncio.subprocess.Process | None = None
