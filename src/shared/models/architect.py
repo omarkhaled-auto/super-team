@@ -22,6 +22,8 @@ class ServiceStack(BaseModel):
 class RelationshipType(str, Enum):
     """Types of relationships between domain entities."""
     OWNS = "OWNS"
+    HAS_MANY = "HAS_MANY"
+    BELONGS_TO = "BELONGS_TO"
     REFERENCES = "REFERENCES"
     TRIGGERS = "TRIGGERS"
     EXTENDS = "EXTENDS"

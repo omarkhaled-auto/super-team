@@ -265,7 +265,7 @@ class TestRelationshipExtraction:
     """Tests for relationship detection from prose keywords."""
 
     def test_has_many_relationship(self, relationship_prd: str) -> None:
-        """parse_prd detects 'has many' as an OWNS relationship with 1:N cardinality."""
+        """parse_prd detects 'has many' as a HAS_MANY relationship with 1:N cardinality."""
         result = parse_prd(relationship_prd)
 
         rel = next(
@@ -274,11 +274,11 @@ class TestRelationshipExtraction:
             None,
         )
         assert rel is not None
-        assert rel["type"] == "OWNS"
+        assert rel["type"] == "HAS_MANY"
         assert rel["cardinality"] == "1:N"
 
     def test_belongs_to_relationship(self, relationship_prd: str) -> None:
-        """parse_prd detects 'belongs to' as an OWNS relationship with N:1 cardinality."""
+        """parse_prd detects 'belongs to' as a BELONGS_TO relationship with N:1 cardinality."""
         result = parse_prd(relationship_prd)
 
         rel = next(
@@ -287,7 +287,7 @@ class TestRelationshipExtraction:
             None,
         )
         assert rel is not None
-        assert rel["type"] == "OWNS"
+        assert rel["type"] == "BELONGS_TO"
         assert rel["cardinality"] == "N:1"
 
     def test_references_relationship(self, relationship_prd: str) -> None:

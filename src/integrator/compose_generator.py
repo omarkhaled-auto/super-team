@@ -187,6 +187,9 @@ class ComposeGenerator:
         PostgreSQL is placed on the backend network only — it must NOT
         be on the frontend network to enforce network segmentation.
         Memory limit: 512MB (TECH-006).
+
+        Mounts ``./init-db/`` as the Docker init directory so that
+        per-service schema creation scripts run on first start.
         """
         return {
             "image": self.postgres_image,
@@ -196,7 +199,10 @@ class ComposeGenerator:
                 "POSTGRES_PASSWORD": "${POSTGRES_PASSWORD:-changeme}",
                 "POSTGRES_DB": "${POSTGRES_DB:-app}",
             },
-            "volumes": ["postgres-data:/var/lib/postgresql/data"],
+            "volumes": [
+                "postgres-data:/var/lib/postgresql/data",
+                "./init-db:/docker-entrypoint-initdb.d:ro",
+            ],
             "networks": ["backend"],
             "mem_limit": "512m",
             "deploy": {
@@ -237,17 +243,131 @@ class ComposeGenerator:
             },
         }
 
+    @staticmethod
+    def _detect_stack(service_info: "ServiceInfo | None") -> str:
+        """Detect the technology stack category for a service.
+
+        Returns one of: ``"python"``, ``"typescript"``, ``"frontend"``.
+        Defaults to ``"python"`` when the stack cannot be determined.
+        """
+        if service_info is None:
+            return "python"
+        stack = service_info.stack
+        if not isinstance(stack, dict):
+            return "python"
+        language = (stack.get("language") or "").lower()
+        framework = (stack.get("framework") or "").lower()
+
+        frontend_frameworks = {
+            "angular", "react", "vue", "next", "nextjs", "nuxt", "svelte",
+        }
+        if framework in frontend_frameworks or language in frontend_frameworks:
+            return "frontend"
+
+        if language in ("typescript", "javascript", "node", "nodejs"):
+            return "typescript"
+        if framework in (
+            "nestjs", "nest", "express", "koa", "hapi", "fastify",
+        ):
+            return "typescript"
+
+        return "python"
+
+    @staticmethod
+    def _dockerfile_content_for_stack(
+        port: int,
+        service_info: "ServiceInfo | None" = None,
+    ) -> str:
+        """Return the Dockerfile content string for the detected stack."""
+        stack = ComposeGenerator._detect_stack(service_info)
+
+        if stack == "frontend":
+            return (
+                "FROM node:20-slim AS build\n"
+                "WORKDIR /app\n"
+                "COPY package*.json ./\n"
+                "RUN npm ci\n"
+                "COPY . .\n"
+                "RUN npm run build\n"
+                "\n"
+                "FROM nginx:alpine\n"
+                "COPY --from=build /app/dist /usr/share/nginx/html\n"
+                "COPY --from=build /app/build /usr/share/nginx/html\n"
+                f"EXPOSE {port}\n"
+                "HEALTHCHECK --interval=15s --timeout=5s --retries=3 \\\n"
+                f"  CMD wget -qO- http://localhost:{port}/ || exit 1\n"
+                'CMD ["nginx", "-g", "daemon off;"]\n'
+            )
+
+        if stack == "typescript":
+            return (
+                "FROM node:20-slim\n"
+                "WORKDIR /app\n"
+                "COPY package*.json ./\n"
+                "RUN npm ci\n"
+                "COPY . .\n"
+                "RUN npm run build\n"
+                f"EXPOSE {port}\n"
+                "HEALTHCHECK --interval=15s --timeout=5s --retries=3 \\\n"
+                f"  CMD curl -f http://localhost:{port}/health || exit 1\n"
+                'CMD ["node", "dist/main.js"]\n'
+            )
+
+        # Default: Python / FastAPI
+        return (
+            "FROM python:3.12-slim-bookworm\n"
+            "\n"
+            "WORKDIR /app\n"
+            "COPY requirements.txt .\n"
+            "RUN pip install --no-cache-dir -r requirements.txt\n"
+            "COPY . .\n"
+            f"EXPOSE {port}\n"
+            "CMD [\"python\", \"-m\", \"uvicorn\", \"main:app\","
+            f" \"--host\", \"0.0.0.0\", \"--port\", \"{port}\"]\n"
+        )
+
     def _app_service(self, svc: ServiceInfo) -> dict[str, Any]:
         """Generate a per-application service definition.
 
-        App services are placed on both frontend and backend networks so
-        they can receive traffic from Traefik (frontend) and access
-        postgres/redis (backend).
+        Backend services are placed on both frontend and backend networks
+        so they can receive traffic from Traefik (frontend) and access
+        postgres/redis (backend).  Frontend services are placed on the
+        frontend network only and do NOT depend on postgres/redis.
         """
         labels = self._traefik.generate_labels(
             service_id=svc.service_id,
             port=svc.port,
         )
+
+        is_frontend = self._detect_stack(svc) == "frontend"
+
+        # Determine health check command based on stack
+        if is_frontend:
+            health_cmd = (
+                f"wget -qO- http://localhost:{svc.port}/ || exit 1"
+            )
+        else:
+            health_cmd = (
+                f"curl -f http://localhost:{svc.port}"
+                f"{svc.health_endpoint} || exit 1"
+            )
+
+        # Build environment variables — backend services get DATABASE_URL
+        # with a per-service schema search_path and REDIS_URL.
+        env: dict[str, str] = {
+            "SERVICE_ID": svc.service_id,
+            "PORT": str(svc.port),
+        }
+
+        if not is_frontend:
+            schema_name = svc.service_id.replace("-", "_") + "_schema"
+            env["DATABASE_URL"] = (
+                "postgresql://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-changeme}"
+                "@postgres:5432/${POSTGRES_DB:-app}"
+                f"?options=-c search_path={schema_name}"
+            )
+            env["REDIS_URL"] = "redis://redis:6379/0"
+
         service_def: dict[str, Any] = {
             "build": {
                 "context": f"./{svc.service_id}",
@@ -255,25 +375,17 @@ class ComposeGenerator:
             },
             "container_name": f"{self.project_name}-{svc.service_id}",
             "labels": labels,
-            "networks": ["frontend", "backend"],
-            "depends_on": {
-                "postgres": {"condition": "service_healthy"},
-                "redis": {"condition": "service_healthy"},
-            },
             "healthcheck": {
                 "test": [
                     "CMD-SHELL",
-                    f"curl -f http://localhost:{svc.port}{svc.health_endpoint} || exit 1",
+                    health_cmd,
                 ],
                 "interval": "15s",
                 "timeout": "5s",
                 "retries": 3,
                 "start_period": "30s",
             },
-            "environment": {
-                "SERVICE_ID": svc.service_id,
-                "PORT": str(svc.port),
-            },
+            "environment": env,
             "mem_limit": "768m",
             "deploy": {
                 "resources": {
@@ -281,16 +393,33 @@ class ComposeGenerator:
                 },
             },
         }
+
+        if is_frontend:
+            service_def["networks"] = ["frontend"]
+        else:
+            service_def["networks"] = ["frontend", "backend"]
+            service_def["depends_on"] = {
+                "postgres": {"condition": "service_healthy"},
+                "redis": {"condition": "service_healthy"},
+            }
+
         return service_def
 
     def generate_default_dockerfile(
-        self, service_dir: Path | str, port: int = 8080
+        self,
+        service_dir: Path | str,
+        port: int = 8080,
+        service_info: "ServiceInfo | None" = None,
     ) -> Path:
         """Generate a default Dockerfile when one does not exist.
+
+        Supports multi-stack Dockerfile generation based on the service's
+        technology stack.
 
         Args:
             service_dir: Directory to write the Dockerfile into.
             port: Port the service listens on.
+            service_info: Optional ``ServiceInfo`` for tech stack detection.
 
         Returns:
             Path to the generated Dockerfile.
@@ -301,18 +430,66 @@ class ComposeGenerator:
             return dockerfile
 
         service_dir.mkdir(parents=True, exist_ok=True)
-        content = f"""FROM python:3.12-slim-bookworm
-
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
-EXPOSE {port}
-CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "{port}"]
-"""
+        content = self._dockerfile_content_for_stack(port, service_info)
         with open(dockerfile, "w", encoding="utf-8") as f:
             f.write(content)
         return dockerfile
+
+    @staticmethod
+    def generate_init_sql(
+        output_dir: Path | str,
+        services: list[ServiceInfo] | None = None,
+    ) -> Path:
+        """Generate a PostgreSQL init script that creates per-service schemas.
+
+        The generated ``init.sql`` is placed in ``{output_dir}/init-db/``
+        so that the PostgreSQL Docker container runs it on first start via
+        the ``/docker-entrypoint-initdb.d`` volume mount.
+
+        Each backend service gets a dedicated schema named
+        ``{service_id_underscored}_schema`` with ``GRANT ALL`` to the
+        default ``app`` user.
+
+        Args:
+            output_dir: Root output directory (same level as compose files).
+            services: List of services.  Only non-frontend services get schemas.
+
+        Returns:
+            Path to the written ``init.sql`` file.
+        """
+        output_dir = Path(output_dir)
+        init_dir = output_dir / "init-db"
+        init_dir.mkdir(parents=True, exist_ok=True)
+        init_sql_path = init_dir / "init.sql"
+
+        lines: list[str] = [
+            "-- Auto-generated per-service PostgreSQL schema init",
+            "-- This script runs once on first container start.",
+            "",
+        ]
+
+        if services:
+            for svc in services:
+                stack_cat = ComposeGenerator._detect_stack(svc)
+                if stack_cat == "frontend":
+                    continue
+                schema_name = svc.service_id.replace("-", "_") + "_schema"
+                lines.append(f"CREATE SCHEMA IF NOT EXISTS {schema_name};")
+                lines.append(
+                    f"GRANT ALL ON SCHEMA {schema_name} "
+                    f"TO ${{POSTGRES_USER:-app}};"
+                )
+                lines.append("")
+
+        if len(lines) <= 3:
+            # No backend services — write a no-op comment
+            lines.append("-- No backend services detected; no schemas to create.")
+            lines.append("")
+
+        with open(init_sql_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+
+        return init_sql_path
 
     # ------------------------------------------------------------------
     # 5-file compose merge strategy (TECH-004)

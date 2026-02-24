@@ -464,8 +464,8 @@ class TestRelationshipTypeMapping:
             assert model.relationships[0].relationship_type == RelationshipType.OWNS
 
     def test_references_synonyms(self):
-        """'references', 'belongs to', 'refers to' map to REFERENCES."""
-        for raw in ["references", "belongs to", "refers to"]:
+        """'references', 'refers to' map to REFERENCES."""
+        for raw in ["references", "refers to"]:
             parsed = ParsedPRD(
                 project_name="Test",
                 entities=[_entity("A"), _entity("B")],
@@ -476,6 +476,20 @@ class TestRelationshipTypeMapping:
             boundaries = [_boundary("Main", ["A", "B"])]
             model = build_domain_model(parsed, boundaries)
             assert model.relationships[0].relationship_type == RelationshipType.REFERENCES
+
+    def test_belongs_to_synonyms(self):
+        """'belongs to', 'belongs_to' map to BELONGS_TO."""
+        for raw in ["belongs to", "belongs_to"]:
+            parsed = ParsedPRD(
+                project_name="Test",
+                entities=[_entity("A"), _entity("B")],
+                relationships=[{
+                    "source": "A", "target": "B", "type": raw,
+                }],
+            )
+            boundaries = [_boundary("Main", ["A", "B"])]
+            model = build_domain_model(parsed, boundaries)
+            assert model.relationships[0].relationship_type == RelationshipType.BELONGS_TO
 
     def test_triggers_synonyms(self):
         """'triggers', 'initiates', 'starts' map to TRIGGERS."""

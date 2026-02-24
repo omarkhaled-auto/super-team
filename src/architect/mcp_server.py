@@ -100,8 +100,10 @@ def decompose_prd(prd_text: str) -> dict[str, Any]:
         # Step 5: Validate decomposition
         validation_issues = validate_decomposition(service_map, domain_model)
 
-        # Step 6: Generate contract stubs
-        contract_stubs = generate_contract_stubs(service_map, domain_model)
+        # Step 6: Generate contract stubs (OpenAPI + AsyncAPI)
+        contract_stubs = generate_contract_stubs(
+            service_map, domain_model, events=parsed.events
+        )
 
         # Step 7: Persist results
         service_map_store.save(service_map)

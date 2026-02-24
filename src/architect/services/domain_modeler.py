@@ -35,9 +35,14 @@ _RELATIONSHIP_TYPE_MAP: dict[str, RelationshipType] = {
     "owns": RelationshipType.OWNS,
     "contains": RelationshipType.OWNS,
     "has": RelationshipType.OWNS,
+    # HAS_MANY
+    "has_many": RelationshipType.HAS_MANY,
+    "has many": RelationshipType.HAS_MANY,
+    # BELONGS_TO
+    "belongs_to": RelationshipType.BELONGS_TO,
+    "belongs to": RelationshipType.BELONGS_TO,
     # REFERENCES
     "references": RelationshipType.REFERENCES,
-    "belongs to": RelationshipType.REFERENCES,
     "refers to": RelationshipType.REFERENCES,
     # TRIGGERS
     "triggers": RelationshipType.TRIGGERS,
@@ -47,6 +52,7 @@ _RELATIONSHIP_TYPE_MAP: dict[str, RelationshipType] = {
     "extends": RelationshipType.EXTENDS,
     "inherits": RelationshipType.EXTENDS,
     # DEPENDS_ON
+    "depends_on": RelationshipType.DEPENDS_ON,
     "depends on": RelationshipType.DEPENDS_ON,
     "requires": RelationshipType.DEPENDS_ON,
     "uses": RelationshipType.DEPENDS_ON,
@@ -178,32 +184,34 @@ def _detect_state_machine(
     """Detect whether an entity should have a state machine attached.
 
     Detection logic:
-        1. Look for a field whose name is in ``_STATE_FIELD_NAMES``.
-        2. If such a field exists **and** ``parsed.state_machines`` contains
-           matching data for this entity, use that rich definition.
-        3. Otherwise, if a state-like field exists but no explicit state
-           machine definition was parsed, create a minimal default state
-           machine (``["active", "inactive"]`` with one transition).
-        4. If no state-like field is present, return ``None``.
+        1. Check if ``parsed.state_machines`` contains matching data for
+           this entity. If so, use it regardless of whether the entity has
+           a status field (fixes the bug where entities with empty fields
+           never got state machines).
+        2. Look for a field whose name is in ``_STATE_FIELD_NAMES``.
+        3. If such a field exists but no explicit state machine definition
+           was parsed, create a minimal default state machine.
+        4. If neither condition is met, return ``None``.
     """
-    # Check if any field is a state-like field
+    # Priority 1: Check for explicit state machine data in parsed.state_machines
+    # This takes priority and works EVEN WITHOUT a status field in entity.fields
+    parsed_sm: dict | None = _find_parsed_state_machine(entity_name, parsed)
+    if parsed_sm is not None:
+        return _state_machine_from_parsed(parsed_sm)
+
+    # Priority 2: Check if any field is a state-like field
     state_field: EntityField | None = None
     for field in fields:
         if field.name.lower() in _STATE_FIELD_NAMES:
             state_field = field
             break
 
-    if state_field is None:
-        return None
+    if state_field is not None:
+        # Has a state field but no explicit state machine data
+        return _default_state_machine()
 
-    # Look for explicit state machine data in parsed.state_machines
-    parsed_sm: dict | None = _find_parsed_state_machine(entity_name, parsed)
-
-    if parsed_sm is not None:
-        return _state_machine_from_parsed(parsed_sm)
-
-    # No explicit definition — create a minimal default state machine
-    return _default_state_machine()
+    # No state machine detected
+    return None
 
 
 def _find_parsed_state_machine(

@@ -386,6 +386,13 @@ def _compute_contracts(
             if target_contract not in source_boundary.consumes_contracts:
                 source_boundary.consumes_contracts.append(target_contract)
 
+            # For BELONGS_TO, the target boundary also needs to consume
+            # from source (bidirectional dependency).
+            if rel_type == "BELONGS_TO":
+                source_contract = f"{_to_kebab_case(source_boundary.name)}-api"
+                if source_contract not in target_boundary.consumes_contracts:
+                    target_boundary.consumes_contracts.append(source_contract)
+
 
 def build_service_map(
     parsed: ParsedPRD,

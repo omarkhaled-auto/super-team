@@ -90,10 +90,12 @@ _DATABASE_NORMALISE: dict[str, str] = {
 }
 
 # Relationship keyword -> (RelationshipType, default cardinality)
+# "has many" -> HAS_MANY, "belongs to" -> BELONGS_TO,
+# "contains" / "composed of" -> OWNS (containment semantics).
 _RELATIONSHIP_KEYWORDS: list[tuple[str, RelationshipType, str]] = [
-    ("belongs to", RelationshipType.OWNS, "N:1"),
-    ("owned by", RelationshipType.OWNS, "N:1"),
-    ("has many", RelationshipType.OWNS, "1:N"),
+    ("belongs to", RelationshipType.BELONGS_TO, "N:1"),
+    ("owned by", RelationshipType.BELONGS_TO, "N:1"),
+    ("has many", RelationshipType.HAS_MANY, "1:N"),
     ("has one", RelationshipType.OWNS, "1:1"),
     ("contains", RelationshipType.OWNS, "1:N"),
     ("composed of", RelationshipType.OWNS, "1:N"),
@@ -115,13 +117,18 @@ _RELATIONSHIP_KEYWORDS: list[tuple[str, RelationshipType, str]] = [
 # These use \w+ (not [A-Z]) so they also match lowercase entity names.
 _PROSE_RELATIONSHIP_PATTERNS: list[tuple[re.Pattern[str], RelationshipType, str]] = [
     (
-        re.compile(r"\b(\w+)\s+(?:has\s+many|has\s+multiple|contains)\s+(\w+)", re.IGNORECASE),
+        re.compile(r"\b(\w+)\s+(?:has\s+many|has\s+multiple)\s+(\w+)", re.IGNORECASE),
+        RelationshipType.HAS_MANY,
+        "1:N",
+    ),
+    (
+        re.compile(r"\b(\w+)\s+contains\s+(\w+)", re.IGNORECASE),
         RelationshipType.OWNS,
         "1:N",
     ),
     (
         re.compile(r"\b(\w+)\s+(?:belongs?\s+to|is\s+(?:owned|part)\s+of)\s+(\w+)", re.IGNORECASE),
-        RelationshipType.OWNS,
+        RelationshipType.BELONGS_TO,
         "N:1",
     ),
     (
@@ -210,6 +217,7 @@ class ParsedPRD:
     technology_hints: dict[str, str | None] = field(default_factory=dict)
     state_machines: list[dict[str, Any]] = field(default_factory=list)
     interview_questions: list[str] = field(default_factory=list)
+    events: list[dict[str, Any]] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -260,12 +268,14 @@ def parse_prd(prd_text: str) -> ParsedPRD:
                 "Please provide entity definitions in a supported format "
                 "(Markdown tables, heading+bullets, prose, or data-model sections)."
             ],
+            events=[],
         )
 
     relationships = _extract_relationships(text, entities)
     bounded_contexts = _extract_bounded_contexts(text, entities)
     technology_hints = _extract_technology_hints(text)
     state_machines = _extract_state_machines(text, entities)
+    events = _extract_events(text, entities, state_machines, bounded_contexts)
     interview_questions = _generate_interview_questions(
         text, entities, relationships, bounded_contexts, technology_hints,
     )
@@ -278,6 +288,7 @@ def parse_prd(prd_text: str) -> ParsedPRD:
         technology_hints=technology_hints,
         state_machines=state_machines,
         interview_questions=interview_questions,
+        events=events,
     )
 
 
@@ -656,6 +667,18 @@ def _extract_entities_from_sentences(text: str) -> list[dict[str, Any]]:
         })
 
     # Pattern C -- "<Entity> entity/model/object/resource"
+    # Role/actor words that commonly appear in descriptions like
+    # "a customer or vendor entity" but are not domain entities themselves
+    # when matched via this prose pattern.
+    _PAT_C_ROLE_WORDS = {
+        "vendor", "customer", "client", "supplier", "provider", "consumer",
+        "manager", "administrator", "operator", "owner", "agent", "buyer",
+        "seller", "recipient", "sender", "viewer", "editor", "member",
+        "another", "each", "every", "this", "that", "same", "new", "old",
+        "single", "multiple", "primary", "secondary", "any", "generic",
+        "custom", "external", "internal", "related", "associated",
+        "parent", "child", "base", "derived", "abstract", "concrete",
+    }
     pat_c = re.compile(
         r"\b([A-Z][A-Za-z]+)\s+(?:entity|model|object|resource|record|aggregate)\b",
         re.IGNORECASE,
@@ -663,9 +686,12 @@ def _extract_entities_from_sentences(text: str) -> list[dict[str, Any]]:
     seen: set[str] = set()
     for m in pat_c.finditer(text):
         name = _to_pascal(m.group(1).strip())
-        if name.lower() in seen or _is_section_heading(name):
+        name_lower = name.lower()
+        if name_lower in seen or _is_section_heading(name):
             continue
-        seen.add(name.lower())
+        if name_lower in _PAT_C_ROLE_WORDS:
+            continue
+        seen.add(name_lower)
         entities.append({
             "name": name,
             "description": "",
@@ -1116,7 +1142,187 @@ def _extract_state_machines(
             _add_state(machine, to_state)
             _add_transition(machine, from_state, to_state, f"{from_state}_to_{to_state}")
 
+    # Strategy 5 -- **Transitions:** section under State Machine headings.
+    # Handles PRD format:
+    #   ### Invoice Status State Machine
+    #   **Transitions:**
+    #   - draft -> submitted: user submits (optional guard)
+    #   - submitted -> approved: manager approves
+    # Also handles: ## State Machine: Invoice, ### Invoice State Machine
+    _strategy9_extract_transition_sections(text, entities, machines)
+
+    # Deduplicate state machines: Strategies 4 and 9 may both extract
+    # state machines from the same heading (e.g. "InvoiceStatus" from
+    # Strategy 4 and "Invoice" from Strategy 9).  Group by normalised
+    # entity name (strip "Status" suffix) and keep the one with the most
+    # transitions.
+    machines = _deduplicate_state_machines(machines, entities)
+
     return machines
+
+
+def _deduplicate_state_machines(
+    machines: list[dict[str, Any]],
+    entities: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Deduplicate state machines that map to the same entity.
+
+    When Strategies 4 and 9 both extract state machines from the same
+    heading (e.g. "InvoiceStatus" and "Invoice"), group by normalised
+    entity name and keep the one with MORE transitions.
+
+    Normalisation rules:
+      - Strip "Status" suffix: "InvoiceStatus" -> "Invoice"
+      - Prefer names that match actual entities (e.g. "Invoice" over "InvoiceStatus")
+    """
+    entity_names_lower = {e.get("name", "").lower() for e in entities}
+
+    # Group machines by normalised key
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for machine in machines:
+        entity = machine.get("entity", "")
+        # Normalise: strip "Status" suffix for grouping
+        key = entity
+        if key.endswith("Status") and len(key) > 6:
+            key = key[:-6]
+        groups.setdefault(key.lower(), []).append(machine)
+
+    # Pick the best machine from each group
+    result: list[dict[str, Any]] = []
+    for key, group in groups.items():
+        if len(group) == 1:
+            result.append(group[0])
+        else:
+            # Sort by: (1) entity name matches a real entity, (2) most transitions
+            def _score(m: dict[str, Any]) -> tuple[int, int]:
+                name_matches = 1 if m.get("entity", "").lower() in entity_names_lower else 0
+                n_transitions = len(m.get("transitions", []))
+                return (name_matches, n_transitions)
+
+            best = max(group, key=_score)
+            result.append(best)
+
+    return result
+
+
+def _strategy9_extract_transition_sections(
+    text: str,
+    entities: list[dict[str, Any]],
+    machines: list[dict[str, Any]],
+) -> None:
+    """Strategy 9: Parse ``**Transitions:**`` sections under State Machine headings.
+
+    Handles PRD formats where state machines are defined under headings like:
+      - ``### Invoice Status State Machine``
+      - ``### Invoice State Machine``
+      - ``## State Machine: Invoice``
+      - ``### Journal Entry Status State Machine``
+
+    Under each heading, looks for a ``**Transitions:**`` or ``Transitions:``
+    section with bullet lines in the format:
+      ``- source -> target: trigger (optional guard)``
+    """
+    entity_names_lower = {e.get("name", "").lower(): e.get("name", "") for e in entities}
+
+    # Match headings like "### Invoice Status State Machine" or "## State Machine: Invoice"
+    heading_pat = re.compile(
+        r"^#{2,5}\s+"
+        r"(?:"
+        r"(?:State\s+Machine)\s*[:\-]\s*(.+)"  # "State Machine: Invoice"
+        r"|"
+        r"(.*?)(?:\s+Status)?\s+State\s+Machine"  # "Invoice Status State Machine"
+        r")\s*$",
+        re.MULTILINE | re.IGNORECASE,
+    )
+
+    # Arrow transition line: "- draft -> submitted: user submits (optional guard)"
+    # Trigger text allows word chars, spaces, hyphens, and other common chars.
+    transition_line_pat = re.compile(
+        r"^\s*[-*]\s+(\w[\w_]*)\s*(?:\u2192|->|-->|=>)\s*(\w[\w_]*)"
+        r"\s*:\s*([\w][\w\s\-/,.']*?)(?:\s*\(([^)]*)\))?\s*$",
+        re.MULTILINE,
+    )
+
+    # Simpler arrow transition line without trigger label:
+    # "- draft -> submitted" or "- draft -> submitted (guard)"
+    transition_line_simple_pat = re.compile(
+        r"^\s*[-*]\s+(\w[\w_]*)\s*(?:\u2192|->|-->|=>)\s*(\w[\w_]*)"
+        r"(?:\s*\(([^)]*)\))?\s*$",
+        re.MULTILINE,
+    )
+
+    for heading_match in heading_pat.finditer(text):
+        # Extract entity hint from heading
+        raw_hint = (heading_match.group(1) or heading_match.group(2) or "").strip()
+        if not raw_hint:
+            continue
+
+        # Normalize: "Journal Entry" -> "JournalEntry", "Fiscal Period" -> "FiscalPeriod"
+        entity_hint = re.sub(r"\s+", "", raw_hint)
+        entity_hint = _to_pascal(entity_hint)
+
+        # Fuzzy match against known entities
+        matched_entity = entity_names_lower.get(entity_hint.lower())
+        if not matched_entity:
+            # Try matching each word against entity names
+            # e.g. heading "Invoice Status" -> try "Invoice"
+            for word in raw_hint.split():
+                candidate = _to_pascal(word.strip())
+                matched_entity = entity_names_lower.get(candidate.lower())
+                if matched_entity:
+                    break
+
+        if not matched_entity:
+            continue
+
+        # Find body text: from heading end to next heading of same or higher level
+        heading_level = len(heading_match.group(0).split()[0])  # count '#' chars
+        body_start = heading_match.end()
+        next_heading_pat = re.compile(
+            r"^#{1," + str(heading_level) + r"}\s+",
+            re.MULTILINE,
+        )
+        next_heading_match = next_heading_pat.search(text, body_start)
+        body_end = next_heading_match.start() if next_heading_match else len(text)
+        body = text[body_start:body_end]
+
+        # Parse transition lines (with trigger label)
+        found_transitions = False
+        for t_match in transition_line_pat.finditer(body):
+            from_state = t_match.group(1).strip().lower()
+            to_state = t_match.group(2).strip().lower()
+            trigger = t_match.group(3).strip() if t_match.group(3) else f"{from_state}_to_{to_state}"
+
+            machine = _find_or_create_machine(machines, matched_entity)
+            _add_state(machine, from_state)
+            _add_state(machine, to_state)
+            _add_transition(machine, from_state, to_state, trigger)
+            found_transitions = True
+
+        # Also parse simpler arrow lines without trigger label
+        for t_match in transition_line_simple_pat.finditer(body):
+            from_state = t_match.group(1).strip().lower()
+            to_state = t_match.group(2).strip().lower()
+            trigger = f"{from_state}_to_{to_state}"
+
+            machine = _find_or_create_machine(machines, matched_entity)
+            _add_state(machine, from_state)
+            _add_state(machine, to_state)
+            _add_transition(machine, from_state, to_state, trigger)
+            found_transitions = True
+
+        # If no bullet transitions found, fall back to bare arrow notation in body
+        if not found_transitions:
+            bare_arrow_pat = re.compile(
+                r"(\w+)\s*(?:\u2192|->|-->|=>)\s*(\w+)"
+            )
+            for t_match in bare_arrow_pat.finditer(body):
+                from_state = t_match.group(1).strip().lower()
+                to_state = t_match.group(2).strip().lower()
+                machine = _find_or_create_machine(machines, matched_entity)
+                _add_state(machine, from_state)
+                _add_state(machine, to_state)
+                _add_transition(machine, from_state, to_state, f"{from_state}_to_{to_state}")
 
 
 def _find_enum_values_near_entity(text: str, entity_name: str) -> list[str]:
@@ -1226,6 +1432,363 @@ def _infer_linear_transitions(states: list[str]) -> list[dict[str, str]]:
             "trigger": f"{states[i]}_to_{states[i + 1]}",
         })
     return transitions
+
+
+# ---------------------------------------------------------------------------
+# Event extraction (Strategy 10)
+# ---------------------------------------------------------------------------
+
+
+def _extract_events(
+    text: str,
+    entities: list[dict[str, Any]],
+    state_machines: list[dict[str, Any]],
+    bounded_contexts: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Extract domain events from the PRD text.
+
+    Detection strategies:
+      1. Explicit event sections (``## Events``, ``## Event-Driven Communication``).
+      2. Prose patterns: "publishes X event", "emits X", "subscribes to X".
+      3. State machine transitions that reference other services' entities
+         (implies cross-service events).
+
+    Each event dict has:
+      - ``name``: Dot-notation event name (e.g. ``invoice.posted``).
+      - ``publisher_service``: Service/context that publishes the event.
+      - ``subscriber_services``: List of services/contexts that subscribe.
+      - ``payload_fields``: List of field names in the event payload.
+      - ``channel``: Channel name (defaults to the event name).
+    """
+    events: list[dict[str, Any]] = []
+    seen_events: set[str] = set()
+
+    # Build entity -> context lookup for determining publisher/subscriber
+    entity_to_context: dict[str, str] = {}
+    for ctx in bounded_contexts:
+        for ename in ctx.get("entities", []):
+            entity_to_context[ename.lower()] = ctx.get("name", "")
+
+    # Strategy 1: Explicit event sections
+    _extract_events_from_sections(text, events, seen_events, entity_to_context)
+
+    # Strategy 2: Prose patterns
+    _extract_events_from_prose(text, events, seen_events, entity_to_context)
+
+    # Strategy 3: State machine transitions implying cross-service events
+    _extract_events_from_state_machines(
+        text, state_machines, entities, events, seen_events, entity_to_context
+    )
+
+    return events
+
+
+def _extract_events_from_sections(
+    text: str,
+    events: list[dict[str, Any]],
+    seen: set[str],
+    entity_to_context: dict[str, str],
+) -> None:
+    """Extract events from explicit event sections in the PRD.
+
+    Handles headings like:
+      - ``## Events``
+      - ``## Event-Driven Communication``
+      - ``## Domain Events``
+      - ``### Event Bus``
+    """
+    section_pat = re.compile(
+        r"^#{2,4}\s+(?:Domain\s+)?(?:Events?|Event[- ]Driven\s+Communication|"
+        r"Event\s+Bus|Asynchronous\s+(?:Events?|Communication))\s*\n"
+        r"((?:(?!^#{1,2}\s).*\n)*)",
+        re.MULTILINE | re.IGNORECASE,
+    )
+    # Table row: | event_name | publisher | subscriber | payload/description |
+    table_row_pat = re.compile(
+        r"^\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|",
+        re.MULTILINE,
+    )
+    # Bullet event: "- invoice.posted: published by Invoicing, consumed by Accounts"
+    bullet_event_pat = re.compile(
+        r"^\s*[-*]\s+(\w+[\w.]*)\s*:\s*(.+)",
+        re.MULTILINE,
+    )
+
+    for sec_match in section_pat.finditer(text):
+        body = sec_match.group(1)
+
+        # Try table rows first
+        for row_match in table_row_pat.finditer(body):
+            name_raw = row_match.group(1).strip().strip("`")
+            # Skip header/separator rows
+            if name_raw.startswith("-") or name_raw.lower() in ("event", "name", "event name"):
+                continue
+            pub = row_match.group(2).strip()
+            sub = row_match.group(3).strip()
+
+            event_name = _normalize_event_name(name_raw)
+            if event_name and event_name not in seen:
+                seen.add(event_name)
+                events.append({
+                    "name": event_name,
+                    "publisher_service": pub,
+                    "subscriber_services": [s.strip() for s in re.split(r"[,;&]", sub) if s.strip()],
+                    "payload_fields": _infer_event_payload(event_name),
+                    "channel": event_name,
+                })
+
+        # Try bullet events
+        for bullet_match in bullet_event_pat.finditer(body):
+            event_name = _normalize_event_name(bullet_match.group(1).strip())
+            desc = bullet_match.group(2).strip()
+            if event_name and event_name not in seen:
+                pub, subs = _parse_event_description(desc, entity_to_context)
+                seen.add(event_name)
+                events.append({
+                    "name": event_name,
+                    "publisher_service": pub,
+                    "subscriber_services": subs,
+                    "payload_fields": _infer_event_payload(event_name),
+                    "channel": event_name,
+                })
+
+
+def _extract_events_from_prose(
+    text: str,
+    events: list[dict[str, Any]],
+    seen: set[str],
+    entity_to_context: dict[str, str],
+) -> None:
+    """Extract events from prose patterns in the PRD text.
+
+    Patterns:
+      - "publishes/emits a(n) <event_name> event"
+      - "subscribes to/listens for <event_name>"
+      - "<entity>.<action> event" (e.g. "invoice.posted event")
+    """
+    # Pattern: "publishes/emits [a/an] EVENT event"
+    pub_pat = re.compile(
+        r"(?:publish(?:es)?|emit(?:s)?|fire(?:s)?|raise(?:s)?|send(?:s)?)\s+"
+        r"(?:an?\s+)?[`\"']?(\w+(?:\.\w+)*)[`\"']?\s+event",
+        re.IGNORECASE,
+    )
+    for m in pub_pat.finditer(text):
+        event_name = _normalize_event_name(m.group(1).strip())
+        if event_name and event_name not in seen:
+            seen.add(event_name)
+            # Try to find publisher from nearby context
+            pub = _find_nearby_service(text, m.start(), entity_to_context)
+            events.append({
+                "name": event_name,
+                "publisher_service": pub,
+                "subscriber_services": [],
+                "payload_fields": _infer_event_payload(event_name),
+                "channel": event_name,
+            })
+
+    # Pattern: "subscribes to/listens for EVENT"
+    sub_pat = re.compile(
+        r"(?:subscribe(?:s)?\s+to|listen(?:s)?\s+(?:for|to)|consume(?:s)?)\s+"
+        r"(?:the\s+)?[`\"']?(\w+(?:\.\w+)*)[`\"']?\s*(?:event)?",
+        re.IGNORECASE,
+    )
+    for m in sub_pat.finditer(text):
+        event_name = _normalize_event_name(m.group(1).strip())
+        if not event_name:
+            continue
+        sub_service = _find_nearby_service(text, m.start(), entity_to_context)
+        # Try to find this event in existing events list and add subscriber
+        found = False
+        for ev in events:
+            if ev["name"] == event_name:
+                if sub_service and sub_service not in ev["subscriber_services"]:
+                    ev["subscriber_services"].append(sub_service)
+                found = True
+                break
+        if not found and event_name not in seen:
+            seen.add(event_name)
+            events.append({
+                "name": event_name,
+                "publisher_service": "",
+                "subscriber_services": [sub_service] if sub_service else [],
+                "payload_fields": _infer_event_payload(event_name),
+                "channel": event_name,
+            })
+
+
+def _extract_events_from_state_machines(
+    text: str,
+    state_machines: list[dict[str, Any]],
+    entities: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+    seen: set[str],
+    entity_to_context: dict[str, str],
+) -> None:
+    """Infer cross-service events from state machine transitions.
+
+    When a state machine transition's trigger text references another entity
+    that belongs to a different bounded context, this implies a domain event.
+    For example, if Invoice transitions from "approved" to "posted" and the
+    trigger mentions "creates JournalEntry", this implies an ``invoice.posted``
+    event from the invoicing context to the accounting context.
+    """
+    entity_names_lower = {e.get("name", "").lower() for e in entities}
+
+    for sm in state_machines:
+        sm_entity = sm.get("entity", "")
+        sm_entity_lower = sm_entity.lower()
+        publisher_context = entity_to_context.get(sm_entity_lower, "")
+
+        for trans in sm.get("transitions", []):
+            to_state = trans.get("to_state", "")
+            trigger = trans.get("trigger", "")
+
+            # Build event name: entity.to_state (e.g. invoice.posted)
+            event_name = f"{sm_entity_lower}.{to_state}"
+
+            # Check if trigger text references another entity from a different context
+            trigger_lower = trigger.lower()
+            references_cross_service = False
+            subscriber_contexts: list[str] = []
+
+            for ename_lower in entity_names_lower:
+                if ename_lower in trigger_lower and ename_lower != sm_entity_lower:
+                    target_ctx = entity_to_context.get(ename_lower, "")
+                    if target_ctx and target_ctx != publisher_context:
+                        references_cross_service = True
+                        if target_ctx not in subscriber_contexts:
+                            subscriber_contexts.append(target_ctx)
+
+            # Also detect cross-service references from the PRD prose near
+            # the transition description (e.g. "creates JournalEntry" near
+            # "posted" state in Invoice state machine)
+            if not references_cross_service:
+                # Look for patterns like "creates X", "triggers X", "updates X"
+                cross_ref_pat = re.compile(
+                    r"\b(?:creates?|triggers?|updates?|notif(?:y|ies)|sends?)\s+"
+                    r"(?:a\s+)?([A-Z][A-Za-z]+)",
+                )
+                for ref_match in cross_ref_pat.finditer(trigger):
+                    ref_entity = ref_match.group(1).lower()
+                    if ref_entity in entity_names_lower and ref_entity != sm_entity_lower:
+                        target_ctx = entity_to_context.get(ref_entity, "")
+                        if target_ctx and target_ctx != publisher_context:
+                            references_cross_service = True
+                            if target_ctx not in subscriber_contexts:
+                                subscriber_contexts.append(target_ctx)
+
+            if references_cross_service and event_name not in seen:
+                seen.add(event_name)
+                events.append({
+                    "name": event_name,
+                    "publisher_service": publisher_context,
+                    "subscriber_services": subscriber_contexts,
+                    "payload_fields": _infer_event_payload(event_name, sm_entity),
+                    "channel": event_name,
+                })
+
+
+def _normalize_event_name(raw: str) -> str:
+    """Normalize a raw event name to dot-notation lowercase.
+
+    Examples:
+      - "InvoicePosted" -> "invoice.posted"
+      - "invoice.posted" -> "invoice.posted"
+      - "INVOICE_POSTED" -> "invoice.posted"
+      - "invoice-posted" -> "invoice.posted"
+    """
+    if not raw:
+        return ""
+    # Already dot-notation
+    if "." in raw:
+        return raw.lower()
+    # Snake_case: invoice_posted -> invoice.posted
+    if "_" in raw:
+        parts = raw.lower().split("_", 1)
+        if len(parts) == 2:
+            return f"{parts[0]}.{parts[1]}"
+        return raw.lower()
+    # Kebab-case: invoice-posted -> invoice.posted
+    if "-" in raw:
+        parts = raw.lower().split("-", 1)
+        if len(parts) == 2:
+            return f"{parts[0]}.{parts[1]}"
+        return raw.lower()
+    # PascalCase: InvoicePosted -> invoice.posted
+    # Insert dots before uppercase letters: "InvoicePosted" -> "Invoice.Posted"
+    s = re.sub(r"([a-z])([A-Z])", r"\1.\2", raw)
+    return s.lower()
+
+
+def _infer_event_payload(event_name: str, entity_name: str = "") -> list[str]:
+    """Infer common payload fields from the event name and entity.
+
+    Returns a list of field names that would typically be in the event payload.
+    """
+    fields = []
+    # Extract entity part from event name (e.g. "invoice" from "invoice.posted")
+    entity_part = event_name.split(".")[0] if "." in event_name else entity_name.lower()
+    if entity_part:
+        fields.append(f"{entity_part}_id")
+    fields.append("tenant_id")
+    fields.append("timestamp")
+    return fields
+
+
+def _parse_event_description(
+    desc: str, entity_to_context: dict[str, str]
+) -> tuple[str, list[str]]:
+    """Parse an event description to extract publisher and subscriber services.
+
+    Handles formats like:
+      - "published by Invoicing, consumed by Accounts"
+      - "Invoicing -> Accounts"
+      - "from Invoicing to Accounts, Reporting"
+    """
+    publisher = ""
+    subscribers: list[str] = []
+
+    # "published by X" / "from X"
+    pub_match = re.search(
+        r"(?:published\s+by|from|emitted\s+by|sent\s+by)\s+(\w[\w\s]*?)(?:\s*[,;]|\s+(?:consumed|to|received)|\s*$)",
+        desc, re.IGNORECASE,
+    )
+    if pub_match:
+        publisher = pub_match.group(1).strip()
+
+    # "consumed by X, Y" / "to X, Y" / "received by X"
+    sub_match = re.search(
+        r"(?:consumed\s+by|to|received\s+by|subscribed\s+by|listened\s+by)\s+(.+?)(?:\s*$)",
+        desc, re.IGNORECASE,
+    )
+    if sub_match:
+        raw_subs = sub_match.group(1).strip()
+        subscribers = [s.strip() for s in re.split(r"[,;&]|\band\b", raw_subs) if s.strip()]
+
+    # Arrow notation: "X -> Y"
+    if not publisher and not subscribers:
+        arrow_match = re.search(r"(\w[\w\s]*?)\s*(?:->|-->|=>|→)\s*(.+)", desc)
+        if arrow_match:
+            publisher = arrow_match.group(1).strip()
+            raw_subs = arrow_match.group(2).strip()
+            subscribers = [s.strip() for s in re.split(r"[,;&]|\band\b", raw_subs) if s.strip()]
+
+    return publisher, subscribers
+
+
+def _find_nearby_service(
+    text: str, pos: int, entity_to_context: dict[str, str]
+) -> str:
+    """Find a service/context name near the given position in text."""
+    window = text[max(0, pos - 200): min(len(text), pos + 50)]
+    # Look for "Service" heading nearby
+    svc_match = re.search(
+        r"(?:^|\n)#{2,4}\s+((?:[A-Z][a-z]+\s+)*(?:Service|Context))\b",
+        window,
+    )
+    if svc_match:
+        return svc_match.group(1).strip()
+    return ""
 
 
 # ---------------------------------------------------------------------------

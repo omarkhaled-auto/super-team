@@ -254,6 +254,109 @@ def generate_builder_config(
     except Exception as exc:
         logger.debug("Acceptance test injection skipped: %s", exc)
 
+    # ---- FIX-6/7: Enrich config with entities, state machines, contracts ----
+    # Load domain model to get entity details and state machines
+    entities_for_service: list[dict[str, Any]] = []
+    state_machines_for_service: list[dict[str, Any]] = []
+    events_published: list[str] = []
+    events_subscribed: list[str] = []
+
+    try:
+        if state.domain_model_path and Path(state.domain_model_path).exists():
+            domain_model = load_json(state.domain_model_path)
+            dm_entities = domain_model.get("entities", [])
+            for ent in dm_entities:
+                owning = ent.get("owning_service", "")
+                if owning == service_info.service_id or owning == service_info.domain:
+                    ent_dict: dict[str, Any] = {
+                        "name": ent.get("name", ""),
+                        "description": ent.get("description", ""),
+                        "fields": ent.get("fields", []),
+                    }
+                    entities_for_service.append(ent_dict)
+                    sm = ent.get("state_machine")
+                    if sm:
+                        state_machines_for_service.append({
+                            "entity": ent.get("name", ""),
+                            **sm,
+                        })
+    except Exception as exc:
+        logger.debug("Domain model enrichment skipped: %s", exc)
+
+    # Determine is_frontend from service map
+    is_frontend = False
+    provides_contracts: list[str] = []
+    consumes_contracts: list[str] = []
+    try:
+        if state.service_map_path and Path(state.service_map_path).exists():
+            smap = load_json(state.service_map_path)
+            for svc in smap.get("services", []):
+                sid = svc.get("service_id", svc.get("name", ""))
+                if sid == service_info.service_id:
+                    is_frontend = bool(svc.get("is_frontend", False))
+                    provides_contracts = svc.get("provides_contracts", [])
+                    consumes_contracts = svc.get("consumes_contracts", [])
+                    events_published = svc.get("events_published", [])
+                    events_subscribed = svc.get("events_subscribed", [])
+                    break
+    except Exception as exc:
+        logger.debug("Service map enrichment skipped: %s", exc)
+
+    # Load contract specs for this service (FIX-7)
+    contracts: dict[str, Any] = {}
+    cross_service_contracts: dict[str, Any] = {}
+    registry_dir_path = (
+        Path(state.contract_registry_path) if state.contract_registry_path else None
+    )
+    try:
+        if registry_dir_path and registry_dir_path.is_dir():
+            for suffix in ("-openapi.json", "-asyncapi.json", ".json"):
+                cfile = registry_dir_path / f"{service_info.service_id}{suffix}"
+                if cfile.exists():
+                    ctype = "asyncapi" if "asyncapi" in suffix else "openapi"
+                    spec_data = load_json(cfile)
+                    if spec_data:
+                        contracts[ctype] = spec_data
+            for consumed_name in consumes_contracts:
+                consumed_sid = consumed_name.replace("-api", "")
+                for suffix in ("-openapi.json", "-asyncapi.json", ".json"):
+                    cfile = registry_dir_path / f"{consumed_sid}{suffix}"
+                    if cfile.exists():
+                        ctype = "asyncapi" if "asyncapi" in suffix else "openapi"
+                        spec_data = load_json(cfile)
+                        if spec_data:
+                            cross_service_contracts.setdefault(
+                                consumed_sid, {}
+                            )[ctype] = spec_data
+                        break
+            # Write contract files to the builder's output directory
+            contracts_dir = output_dir / "contracts"
+            contracts_dir.mkdir(parents=True, exist_ok=True)
+            for ctype, cspec in contracts.items():
+                cpath = contracts_dir / f"{ctype}.json"
+                atomic_write_json(cpath, cspec)
+            for consumed_sid, cspecs in cross_service_contracts.items():
+                for ctype, cspec in cspecs.items():
+                    cpath = contracts_dir / f"{consumed_sid}_{ctype}.json"
+                    atomic_write_json(cpath, cspec)
+    except Exception as exc:
+        logger.debug("Contract enrichment skipped: %s", exc)
+
+    # Look up Graph RAG context using both service_id and service name
+    # to handle potential service_id/name mismatch (FIX-8)
+    graph_rag_contexts = state.phase_artifacts.get("graph_rag_contexts", {})
+    graph_rag_context = graph_rag_contexts.get(service_info.service_id, "")
+    if not graph_rag_context:
+        graph_rag_context = graph_rag_contexts.get(service_info.domain, "")
+    if not graph_rag_context:
+        for key, val in graph_rag_contexts.items():
+            if (
+                key.replace("-", "").lower()
+                == service_info.service_id.replace("-", "").lower()
+            ):
+                graph_rag_context = val
+                break
+
     config_dict: dict[str, Any] = {
         "depth": config.builder.depth,
         "milestone": f"build-{service_info.service_id}",
@@ -264,12 +367,39 @@ def generate_builder_config(
         "stack": service_info.stack,
         "port": service_info.port,
         "output_dir": str(output_dir),
-        "graph_rag_context": state.phase_artifacts.get(
-            "graph_rag_contexts", {}
-        ).get(service_info.service_id, ""),
+        "graph_rag_context": graph_rag_context,
         "failure_context": failure_context,
         "acceptance_test_requirements": acceptance_test_requirements,
+        # FIX-6: Entity & state machine enrichment
+        "entities": entities_for_service,
+        "state_machines": state_machines_for_service,
+        "is_frontend": is_frontend,
+        "provides_contracts": provides_contracts,
+        "consumes_contracts": consumes_contracts,
+        "events_published": events_published,
+        "events_subscribed": events_subscribed,
+        # FIX-7: Contract specs
+        "contracts": contracts,
+        "cross_service_contracts": cross_service_contracts,
     }
+
+    # FIX-6: Frontend-specific config additions
+    if is_frontend:
+        config_dict["pages"] = []
+        api_urls: dict[str, str] = {}
+        try:
+            if state.service_map_path and Path(state.service_map_path).exists():
+                smap = load_json(state.service_map_path)
+                for svc in smap.get("services", []):
+                    sid = svc.get("service_id", svc.get("name", ""))
+                    if sid != service_info.service_id and not svc.get(
+                        "is_frontend", False
+                    ):
+                        port = svc.get("port", 8080)
+                        api_urls[sid] = f"http://{sid}:{port}"
+        except Exception:
+            pass
+        config_dict["api_urls"] = api_urls
 
     # Return a dummy path for config - agent_team will use CLI args instead
     config_path = output_dir / "config.yaml.not-used"
@@ -594,9 +724,69 @@ async def run_contract_registration(
             contract_file = registry_dir / f"{service_name}.json"
             atomic_write_json(contract_file, spec)
 
+    # FIX-4: Generate Schemathesis test files for each registered contract.
+    # Best-effort -- failures never crash the pipeline.
+    generated_test_files: list[str] = []
+    test_services: list[str] = []
+    for reg_result in registered:
+        _svc_name_4 = reg_result.get("service_name", "?")
+        try:
+            contract_id = reg_result.get("id", "")
+            svc_name = reg_result.get("service_name", "")
+            if not contract_id or not svc_name:
+                continue
+
+            from src.contract_engine.mcp_client import (
+                generate_tests as _gen_tests,
+            )
+
+            test_code = await _gen_tests(
+                contract_id=contract_id,
+                framework="pytest",
+                include_negative=False,
+            )
+            if test_code and not test_code.startswith("{"):
+                test_dir = Path(config.output_dir) / "tests" / "contract"
+                test_dir.mkdir(parents=True, exist_ok=True)
+                test_file = test_dir / f"test_schemathesis_{svc_name}.py"
+                test_file.write_text(test_code, encoding="utf-8")
+                generated_test_files.append(str(test_file))
+                test_services.append(svc_name)
+                logger.info(
+                    "Generated Schemathesis tests for %s at %s",
+                    svc_name, test_file,
+                )
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            logger.debug(
+                "Schemathesis test generation cancelled for %s", _svc_name_4,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Schemathesis test generation failed for %s: %s (non-fatal)",
+                _svc_name_4, exc,
+            )
+
+    # FIX-5: Generate Pact contract files for cross-service dependencies.
+    # Best-effort -- failures never crash the pipeline.
+    pact_files_generated: list[str] = []
+    try:
+        pact_files_generated = _generate_pact_files(
+            registry_dir, service_map, contract_stubs, registered,
+        )
+        if pact_files_generated:
+            logger.info(
+                "Generated %d Pact contract file(s) in %s/pacts/",
+                len(pact_files_generated), registry_dir,
+            )
+    except Exception as exc:
+        logger.warning("Pact file generation failed (non-fatal): %s", exc)
+
     state.phase_artifacts[PHASE_CONTRACT_REGISTRATION] = {
         "registered_contracts": len(registered),
         "registry_path": str(registry_dir),
+        "generated_test_files": generated_test_files,
+        "test_services": test_services,
+        "pact_files": pact_files_generated,
     }
     if PHASE_CONTRACT_REGISTRATION not in state.completed_phases:
         state.completed_phases.append(PHASE_CONTRACT_REGISTRATION)
@@ -609,6 +799,129 @@ async def run_contract_registration(
         "Contract registration complete -- %d contracts registered",
         len(registered),
     )
+
+
+def _generate_pact_files(
+    registry_dir: Path,
+    service_map: dict,
+    contract_stubs: dict[str, Any],
+    registered: list[dict[str, Any]],
+) -> list[str]:
+    """Generate Pact v3 JSON files for cross-service dependencies.
+
+    Creates consumer-driven contract files in ``{registry_dir}/pacts/``
+    by examining cross-service relationships in the service map.
+
+    Returns a list of generated pact file paths.
+    """
+    pacts_dir = registry_dir / "pacts"
+    pacts_dir.mkdir(parents=True, exist_ok=True)
+    generated: list[str] = []
+
+    services = service_map.get("services", [])
+    if not isinstance(services, list):
+        return generated
+
+    # Build a mapping of service_id -> OpenAPI spec for quick lookup
+    spec_by_service: dict[str, dict[str, Any]] = {}
+    for reg in registered:
+        svc_name = reg.get("service_name", "")
+        if svc_name:
+            spec_file = registry_dir / f"{svc_name}.json"
+            if spec_file.exists():
+                try:
+                    spec_by_service[svc_name] = load_json(spec_file)
+                except Exception:
+                    pass
+
+    for svc in services:
+        if not isinstance(svc, dict):
+            continue
+        consumer_name = svc.get("service_id", svc.get("name", ""))
+        consumes = svc.get("consumes_contracts", [])
+        if not consumer_name or not consumes:
+            continue
+
+        for consumed_contract in consumes:
+            provider_name = consumed_contract.replace("-api", "")
+            provider_spec = spec_by_service.get(provider_name, {})
+
+            interactions: list[dict[str, Any]] = []
+            paths = provider_spec.get("paths", {})
+            for path, methods in paths.items():
+                if not isinstance(methods, dict):
+                    continue
+                for method, operation in methods.items():
+                    if method.startswith("x-") or method == "parameters":
+                        continue
+                    if not isinstance(operation, dict):
+                        continue
+
+                    responses = operation.get("responses", {})
+                    expected_status = 200
+                    expected_body: dict[str, Any] = {}
+                    for status_code in ("200", "201", "204"):
+                        if status_code in responses:
+                            expected_status = int(status_code)
+                            resp_def = responses[status_code]
+                            if isinstance(resp_def, dict):
+                                content = resp_def.get("content", {})
+                                json_content = content.get(
+                                    "application/json", {}
+                                )
+                                schema = json_content.get("schema", {})
+                                if schema:
+                                    expected_body = {"schema": schema}
+                            break
+
+                    interaction: dict[str, Any] = {
+                        "description": (
+                            f"{consumer_name} calls "
+                            f"{method.upper()} {path}"
+                        ),
+                        "providerState": (
+                            f"{provider_name} has default data"
+                        ),
+                        "request": {
+                            "method": method.upper(),
+                            "path": path,
+                        },
+                        "response": {
+                            "status": expected_status,
+                            "headers": {
+                                "Content-Type": "application/json",
+                            },
+                        },
+                    }
+                    if expected_body:
+                        interaction["response"]["body"] = expected_body
+                    interactions.append(interaction)
+
+            if not interactions:
+                continue
+
+            pact_doc: dict[str, Any] = {
+                "consumer": {"name": consumer_name},
+                "provider": {"name": provider_name},
+                "interactions": interactions,
+                "metadata": {
+                    "pactSpecification": {"version": "3.0.0"},
+                },
+            }
+
+            pact_file = pacts_dir / f"{consumer_name}-{provider_name}.json"
+            try:
+                pact_file.write_text(
+                    json.dumps(pact_doc, indent=2, sort_keys=True),
+                    encoding="utf-8",
+                )
+                generated.append(str(pact_file))
+            except OSError as exc:
+                logger.warning(
+                    "Failed to write pact file %s: %s", pact_file, exc,
+                )
+
+    return generated
 
 
 async def _register_single_contract(
@@ -756,6 +1069,292 @@ async def run_parallel_builders(
         )
 
 
+# ---------------------------------------------------------------------------
+# Builder CLAUDE.md injection — bridge enrichment data to the subprocess
+# ---------------------------------------------------------------------------
+
+_STACK_INSTRUCTIONS: dict[str, str] = {
+    "python": (
+        "Generate Python 3.12 code using FastAPI framework.\n"
+        "Use Pydantic models for request/response schemas.\n"
+        "Use SQLAlchemy 2.0 with async sessions for database access.\n"
+        "Use alembic for migrations.\n"
+    ),
+    "typescript": (
+        "Generate TypeScript code using NestJS framework.\n"
+        "Use @Controller, @Injectable, @Entity decorators.\n"
+        "Use TypeORM for database access with @Entity, @Column, @PrimaryGeneratedColumn.\n"
+        "Use class-validator for DTO validation.\n"
+    ),
+    "frontend": (
+        "Generate a modern frontend application.\n"
+        "Use standalone components (no NgModules if Angular).\n"
+        "Use the framework's recommended component library for UI.\n"
+        "Use HttpClient / fetch for API calls.\n"
+        "Route structure should match the service API URLs.\n"
+    ),
+}
+
+
+def _detect_stack_category(stack: dict[str, str] | str | None) -> str:
+    """Categorise a stack dict into python / typescript / frontend."""
+    if not stack or not isinstance(stack, dict):
+        return "python"
+    language = (stack.get("language") or "").lower()
+    framework = (stack.get("framework") or "").lower()
+
+    frontend_frameworks = {
+        "angular", "react", "vue", "next", "nextjs", "nuxt", "svelte",
+    }
+    if framework in frontend_frameworks or language in frontend_frameworks:
+        return "frontend"
+    if language in ("typescript", "javascript", "node", "nodejs"):
+        return "typescript"
+    if framework in ("nestjs", "nest", "express", "koa", "hapi", "fastify"):
+        return "typescript"
+    return "python"
+
+
+def _write_builder_claude_md(
+    output_dir: Path,
+    builder_config: dict[str, Any],
+) -> Path:
+    """Write a ``.claude/CLAUDE.md`` in the builder output directory.
+
+    The file contains all enrichment data (tech stack, entities, state
+    machines, events, contracts, cross-service deps) so that the builder
+    subprocess has full service context.
+
+    When agent-team-v15's ``write_teammate_claude_md()`` runs later inside
+    the builder subprocess, it will find this file and **append** its own
+    generated role instructions after our content (because the file
+    will not yet contain the ``<!-- AGENT-TEAMS:BEGIN -->`` markers).
+
+    Parameters
+    ----------
+    output_dir :
+        The builder's working directory (``{config.output_dir}/{service_id}``).
+    builder_config :
+        The enriched config dict produced by ``generate_builder_config()``.
+
+    Returns
+    -------
+    Path
+        Path to the written ``.claude/CLAUDE.md`` file.
+    """
+    service_id = builder_config.get("service_id", "unknown")
+    domain = builder_config.get("domain", "")
+    stack = builder_config.get("stack", {})
+    port = builder_config.get("port", 8080)
+
+    # Determine tech stack details
+    if isinstance(stack, dict):
+        language = stack.get("language", "python")
+        framework = stack.get("framework", "")
+        database = stack.get("database", "PostgreSQL")
+    else:
+        language = str(stack) if stack else "python"
+        framework = ""
+        database = "PostgreSQL"
+
+    stack_category = _detect_stack_category(stack)
+    stack_instructions = _STACK_INSTRUCTIONS.get(stack_category, _STACK_INSTRUCTIONS["python"])
+
+    schema_name = service_id.replace("-", "_") + "_schema"
+
+    lines: list[str] = []
+    lines.append(f"# Service Context: {service_id}\n")
+
+    # ---- Technology Stack ----
+    lines.append("## Technology Stack\n")
+    lines.append(f"- **Language:** {language}")
+    if framework:
+        lines.append(f"- **Framework:** {framework}")
+    lines.append(f"- **Database:** {database or 'PostgreSQL'} (schema: `{schema_name}`)")
+    lines.append(f"- **Port:** {port}")
+    lines.append("")
+
+    lines.append(f"## THIS SERVICE MUST USE {language}")
+    if framework:
+        lines[-1] += f" / {framework}"
+    lines.append("")
+    lines.append(stack_instructions)
+
+    # ---- Owned Entities ----
+    entities = builder_config.get("entities", [])
+    if entities:
+        lines.append("## Owned Entities\n")
+        for ent in entities:
+            ent_name = ent.get("name", "")
+            ent_desc = ent.get("description", "")
+            lines.append(f"### {ent_name}")
+            if ent_desc:
+                lines.append(f"{ent_desc}\n")
+
+            fields = ent.get("fields", [])
+            if fields:
+                field_strs = []
+                for f in fields:
+                    fname = f.get("name", "")
+                    ftype = f.get("type", "unknown")
+                    freq = " (required)" if f.get("required", True) else " (optional)"
+                    field_strs.append(f"  - `{fname}`: {ftype}{freq}")
+                lines.append("**Fields:**")
+                lines.extend(field_strs)
+                lines.append("")
+        lines.append("")
+
+    # ---- State Machines ----
+    state_machines = builder_config.get("state_machines", [])
+    if state_machines:
+        lines.append("## State Machines\n")
+        for sm in state_machines:
+            sm_entity = sm.get("entity", "")
+            states = sm.get("states", [])
+            initial = sm.get("initial_state", "")
+            transitions = sm.get("transitions", [])
+            lines.append(f"### {sm_entity} State Machine")
+            if states:
+                lines.append(f"- **States:** {', '.join(states)}")
+            if initial:
+                lines.append(f"- **Initial state:** {initial}")
+            if transitions:
+                lines.append("- **Transitions:**")
+                for tr in transitions:
+                    from_s = tr.get("from_state", "")
+                    to_s = tr.get("to_state", "")
+                    trigger = tr.get("trigger", "")
+                    lines.append(f"  - {from_s} -> {to_s} (trigger: {trigger})")
+            lines.append("")
+        lines.append("")
+
+    # ---- Events Published ----
+    events_pub = builder_config.get("events_published", [])
+    if events_pub:
+        lines.append("## Events Published\n")
+        for ev in events_pub:
+            lines.append(f"- `{ev}`")
+        lines.append("")
+
+    # ---- Events Subscribed ----
+    events_sub = builder_config.get("events_subscribed", [])
+    if events_sub:
+        lines.append("## Events Subscribed\n")
+        for ev in events_sub:
+            lines.append(f"- `{ev}`")
+        lines.append("")
+
+    # ---- Cross-Service Dependencies ----
+    provides = builder_config.get("provides_contracts", [])
+    consumes = builder_config.get("consumes_contracts", [])
+    cross_contracts = builder_config.get("cross_service_contracts", {})
+
+    if provides or consumes or cross_contracts:
+        lines.append("## Cross-Service Dependencies\n")
+        if provides:
+            lines.append("**Provides:**")
+            for c in provides:
+                lines.append(f"- `{c}`")
+            lines.append("")
+        if consumes:
+            lines.append("**Consumes:**")
+            for c in consumes:
+                lines.append(f"- `{c}`")
+            lines.append("")
+
+    # ---- Contract Specifications ----
+    own_contracts = builder_config.get("contracts", {})
+    if own_contracts:
+        lines.append("## Contract Specifications\n")
+        for ctype, cspec in own_contracts.items():
+            if isinstance(cspec, dict):
+                # Inline key endpoint info from OpenAPI spec
+                info = cspec.get("info", {})
+                title = info.get("title", ctype)
+                version = info.get("version", "")
+                lines.append(f"### {title}" + (f" v{version}" if version else ""))
+                paths = cspec.get("paths", {})
+                if paths:
+                    lines.append("**Endpoints:**")
+                    for path_url, methods in paths.items():
+                        if isinstance(methods, dict):
+                            for method, details in methods.items():
+                                if method.lower() in ("get", "post", "put", "patch", "delete"):
+                                    summary = ""
+                                    if isinstance(details, dict):
+                                        summary = details.get("summary", details.get("operationId", ""))
+                                    lines.append(f"- `{method.upper()} {path_url}` — {summary}")
+                lines.append("")
+        lines.append("")
+
+    if cross_contracts:
+        lines.append("## Consumed Service Contracts\n")
+        for consumed_sid, cspecs in cross_contracts.items():
+            lines.append(f"### {consumed_sid}")
+            for ctype, cspec in cspecs.items():
+                if isinstance(cspec, dict):
+                    paths = cspec.get("paths", {})
+                    if paths:
+                        for path_url, methods in paths.items():
+                            if isinstance(methods, dict):
+                                for method, details in methods.items():
+                                    if method.lower() in ("get", "post", "put", "patch", "delete"):
+                                        lines.append(f"- `{method.upper()} {path_url}`")
+            lines.append("")
+
+    # ---- Graph RAG Context ----
+    graph_rag = builder_config.get("graph_rag_context", "")
+    if graph_rag:
+        lines.append("## Service Dependency Graph Context\n")
+        lines.append(graph_rag)
+        lines.append("")
+
+    # ---- Contract files on disk ----
+    lines.append("## Local Contract Files\n")
+    lines.append(
+        "Contract specification files are available in the `./contracts/` directory.\n"
+        "Read these files for detailed API schemas when implementing endpoints.\n"
+    )
+
+    # ---- Implementation Notes ----
+    lines.append("## Important Implementation Notes\n")
+    lines.append(f"- Database schema: `{schema_name}` (use schema-qualified table names)")
+    lines.append("- Use Redis Pub/Sub for event publishing/subscribing")
+    lines.append("- Each event must include `tenant_id` for multi-tenant isolation")
+    lines.append("- All API endpoints must validate JWT tokens via auth-service")
+    lines.append(f"- Service port: {port}")
+    lines.append("")
+
+    # ---- Failure context (from previous runs) ----
+    failure_ctx = builder_config.get("failure_context", "")
+    if failure_ctx:
+        lines.append("## Previous Build Failure Context\n")
+        lines.append(failure_ctx)
+        lines.append("")
+
+    # ---- Acceptance test requirements ----
+    acceptance = builder_config.get("acceptance_test_requirements", "")
+    if acceptance:
+        lines.append(acceptance)
+        lines.append("")
+
+    content = "\n".join(lines)
+
+    # Write to {output_dir}/.claude/CLAUDE.md
+    claude_dir = output_dir / ".claude"
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    claude_md_path = claude_dir / "CLAUDE.md"
+    claude_md_path.write_text(content, encoding="utf-8")
+
+    logger.info(
+        "Wrote builder CLAUDE.md for %s (%d bytes) at %s",
+        service_id,
+        len(content),
+        claude_md_path,
+    )
+    return claude_md_path
+
+
 async def _run_single_builder(
     service_info: ServiceInfo,
     config: SuperOrchestratorConfig,
@@ -776,6 +1375,19 @@ async def _run_single_builder(
         # Read the original PRD
         original_prd = Path(state.prd_path).read_text(encoding="utf-8")
         prd_file.write_text(original_prd, encoding="utf-8")
+
+    # CONTEXT-INJECTION: Write .claude/CLAUDE.md with all enrichment data
+    # so the builder subprocess has full service context (entities, state
+    # machines, contracts, events, tech stack, cross-service deps).
+    # This bridges the gap identified in DEEP_AUDIT Issue 1K (T2-T6).
+    try:
+        _write_builder_claude_md(output_dir, builder_config)
+    except Exception as exc:
+        logger.warning(
+            "Failed to write builder CLAUDE.md for %s: %s (non-fatal)",
+            service_info.service_id,
+            exc,
+        )
 
     # WIRE-016: Try create_execution_backend first (in-process).
     # Prefer agent_team_v15 (MCP-enhanced), fall back to agent_team (base).
@@ -2286,18 +2898,44 @@ async def _phase_builders(
     await run_contract_registration(state, config, cost_tracker, shutdown)
 
     # Build Graph RAG context (non-blocking best-effort)
+    service_map = (
+        load_json(state.service_map_path) if state.service_map_path else {}
+    )
     if config.graph_rag.enabled and state.service_map_path:
         try:
-            service_map = load_json(state.service_map_path)
-            graph_rag_contexts = await _build_graph_rag_context(config, service_map)
+            graph_rag_contexts = await _build_graph_rag_context(
+                config, service_map
+            )
             if graph_rag_contexts:
                 state.phase_artifacts["graph_rag_contexts"] = graph_rag_contexts
                 logger.info(
                     "Graph RAG context built for %d services",
                     len(graph_rag_contexts),
                 )
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            logger.warning("Graph RAG context build cancelled (non-fatal)")
         except Exception as exc:
-            logger.warning("Graph RAG context build failed (non-fatal): %s", exc)
+            logger.warning(
+                "Graph RAG context build failed (non-fatal): %s", exc
+            )
+
+    # FIX-8: Generate fallback context for services missing Graph RAG context
+    if state.service_map_path:
+        try:
+            fallback_contexts = _build_fallback_contexts(state, service_map)
+            existing = state.phase_artifacts.get("graph_rag_contexts", {})
+            for svc_key, fallback_text in fallback_contexts.items():
+                if not existing.get(svc_key):
+                    existing[svc_key] = fallback_text
+            if existing:
+                state.phase_artifacts["graph_rag_contexts"] = existing
+                logger.info(
+                    "Fallback context generated for %d services "
+                    "(total contexts: %d)",
+                    len(fallback_contexts), len(existing),
+                )
+        except Exception as exc:
+            logger.debug("Fallback context generation skipped: %s", exc)
 
     state.save()
     await model.contracts_registered()  # type: ignore[attr-defined]
@@ -2318,6 +2956,123 @@ async def _phase_builders_complete(
     await model.builders_done()  # type: ignore[attr-defined]
     state.current_state = model.state
     state.save()
+
+
+def _build_fallback_contexts(
+    state: PipelineState,
+    service_map: dict,
+) -> dict[str, str]:
+    """Build fallback context for services when Graph RAG is unavailable.
+
+    Generates markdown-formatted context from the service map, domain
+    model, and contract registry.  Keyed by **both** service_id and
+    service name so that ``generate_builder_config()`` can find the
+    context regardless of which lookup key it tries.
+    """
+    contexts: dict[str, str] = {}
+    services = service_map.get("services", [])
+    if not isinstance(services, list):
+        return contexts
+
+    # Load domain model for entity enrichment
+    domain_entities: dict[str, list[dict]] = {}
+    domain_relationships: list[dict] = []
+    try:
+        if state.domain_model_path and Path(state.domain_model_path).exists():
+            dm = load_json(state.domain_model_path)
+            domain_relationships = dm.get("relationships", [])
+            for ent in dm.get("entities", []):
+                owning = ent.get("owning_service", "")
+                domain_entities.setdefault(owning, []).append(ent)
+    except Exception:
+        pass
+
+    for svc in services:
+        if not isinstance(svc, dict):
+            continue
+        sid = svc.get("service_id", svc.get("name", ""))
+        name = svc.get("name", sid)
+        if not sid:
+            continue
+
+        lines: list[str] = []
+        lines.append(f"## Service Context: {name}")
+        lines.append("")
+
+        domain = svc.get("domain", "")
+        if domain:
+            lines.append(f"**Domain:** {domain}")
+            lines.append("")
+
+        stack = svc.get("stack", {})
+        if isinstance(stack, dict):
+            lang = stack.get("language", "")
+            fw = stack.get("framework", "")
+            if lang or fw:
+                lines.append(
+                    f"**Tech Stack:** {lang}"
+                    + (f" / {fw}" if fw else "")
+                )
+                lines.append("")
+
+        ents = domain_entities.get(sid, []) or domain_entities.get(name, [])
+        if ents:
+            lines.append("### Owned Entities")
+            for ent in ents:
+                ent_name = ent.get("name", "")
+                lines.append(f"- **{ent_name}**")
+                for fld in ent.get("fields", []):
+                    lines.append(
+                        f"  - {fld.get('name', '')}: "
+                        f"{fld.get('type', 'unknown')}"
+                    )
+                sm = ent.get("state_machine")
+                if sm:
+                    states = sm.get("states", [])
+                    if states:
+                        lines.append(
+                            f"  - State Machine: {' -> '.join(states)}"
+                        )
+            lines.append("")
+
+        provides = svc.get("provides_contracts", [])
+        consumes = svc.get("consumes_contracts", [])
+        if provides:
+            lines.append("### Provides Contracts")
+            for c in provides:
+                lines.append(f"- {c}")
+            lines.append("")
+        if consumes:
+            lines.append("### Consumes Contracts")
+            for c in consumes:
+                lines.append(f"- {c}")
+            lines.append("")
+
+        entity_names = {e.get("name", "") for e in ents}
+        related_lines: list[str] = []
+        for rel in domain_relationships:
+            src = rel.get("source_entity", rel.get("source", ""))
+            tgt = rel.get("target_entity", rel.get("target", ""))
+            rtype = rel.get("relationship_type", rel.get("type", ""))
+            if src in entity_names and tgt not in entity_names:
+                related_lines.append(
+                    f"- {src} --[{rtype}]--> {tgt} (external)"
+                )
+            elif tgt in entity_names and src not in entity_names:
+                related_lines.append(
+                    f"- {src} (external) --[{rtype}]--> {tgt}"
+                )
+        if related_lines:
+            lines.append("### Cross-Service Relationships")
+            lines.extend(related_lines)
+            lines.append("")
+
+        context_text = "\n".join(lines)
+        contexts[sid] = context_text
+        if name and name != sid:
+            contexts[name] = context_text
+
+    return contexts
 
 
 async def _build_graph_rag_context(
