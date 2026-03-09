@@ -28,6 +28,12 @@ from src.integrator.traefik_config import TraefikConfigGenerator
 class ComposeGenerator:
     """Generates Docker Compose v2 YAML files."""
 
+    _STACK_DEFAULT_PORTS: dict[str, int] = {
+        "python": 8000, "fastapi": 8000, "flask": 5000, "django": 8000,
+        "node": 3000, "nestjs": 8080, "express": 3000, "typescript": 8080,
+        "angular": 80, "react": 80, "vue": 80, "frontend": 80,
+    }
+
     def __init__(
         self,
         config: Any = None,
@@ -109,7 +115,6 @@ class ComposeGenerator:
         else:
             output_path = None
         compose: dict[str, Any] = {
-            "version": "3.8",
             "services": {},
             "networks": {
                 "frontend": {
@@ -273,15 +278,132 @@ class ComposeGenerator:
 
         return "python"
 
+    def _get_internal_port(self, stack: str, svc_port: int | None = None) -> int:
+        """Return the internal port for a service based on stack.
+
+        If *svc_port* is provided and non-zero, it is returned as-is.
+        Otherwise the conventional default for the stack is used, falling
+        back to 8080.
+        """
+        if svc_port:
+            return svc_port
+        return self._STACK_DEFAULT_PORTS.get(stack, 8080)
+
+    @staticmethod
+    def _generate_healthcheck(
+        service_id: str,
+        stack: str,
+        internal_port: int,
+        health_endpoint: str,
+    ) -> dict[str, Any]:
+        """Return a compose ``healthcheck`` dict appropriate for *stack*.
+
+        Uses tools available inside the base image for each stack:
+        - Python (python:3.12-slim): ``python -c "import urllib..."``
+        - Node/TypeScript (node:20-slim): ``node -e "..."``
+        - Frontend (nginx:stable-alpine): ``wget``
+        - Fallback: ``wget``
+
+        All URLs use ``127.0.0.1`` (never ``localhost``) to avoid IPv6
+        resolution issues on Alpine/Docker.
+        """
+        if stack == "frontend":
+            cmd = "wget -qO- http://127.0.0.1:80/ || exit 1"
+        elif stack == "python":
+            cmd = (
+                'python -c "import urllib.request; '
+                "urllib.request.urlopen("
+                f"'http://127.0.0.1:{internal_port}{health_endpoint}')"
+                '"'
+            )
+        elif stack == "typescript":
+            cmd = (
+                'node -e "'
+                "const http = require('http'); "
+                f"http.get('http://127.0.0.1:{internal_port}{health_endpoint}', "
+                "r => process.exit(r.statusCode === 200 ? 0 : 1))"
+                ".on('error', () => process.exit(1))"
+                '"'
+            )
+        else:
+            # Fallback — wget is widely available
+            cmd = (
+                f"wget -qO- http://127.0.0.1:{internal_port}"
+                f"{health_endpoint} || exit 1"
+            )
+
+        return {
+            "test": ["CMD-SHELL", cmd],
+            "interval": "15s",
+            "timeout": "5s",
+            "retries": 3,
+            "start_period": "30s",
+        }
+
+    @staticmethod
+    def _generate_env_vars(
+        service_id: str,
+        stack: str,
+        port: int,
+    ) -> dict[str, str]:
+        """Return environment variables appropriate for *stack*.
+
+        - Python/FastAPI: ``DATABASE_URL`` with ``postgresql+asyncpg://``
+        - Node/TypeScript/NestJS: individual ``DB_HOST``, ``DB_PORT``, etc.
+        - Frontend: minimal (``NODE_ENV`` only)
+
+        All backend stacks get ``JWT_SECRET`` and ``LOG_LEVEL``.
+        """
+        db_name = service_id.replace("-", "_")
+
+        if stack == "frontend":
+            return {"NODE_ENV": "production"}
+
+        if stack == "python":
+            return {
+                "SERVICE_ID": service_id,
+                "SERVICE_PORT": str(port),
+                "DATABASE_URL": (
+                    f"postgresql+asyncpg://app:app@postgres:5432/{db_name}"
+                ),
+                "REDIS_URL": "redis://redis:6379/0",
+                "JWT_SECRET": "${JWT_SECRET:-super-secret-change-in-production}",
+                "LOG_LEVEL": "info",
+            }
+
+        # typescript / nestjs / node / express
+        return {
+            "SERVICE_ID": service_id,
+            "PORT": str(port),
+            "DB_TYPE": "postgres",
+            "DB_HOST": "postgres",
+            "DB_PORT": "5432",
+            "DB_USERNAME": "app",
+            "DB_PASSWORD": "app",
+            "DB_DATABASE": db_name,
+            "REDIS_HOST": "redis",
+            "REDIS_PORT": "6379",
+            "REDIS_URL": "redis://redis:6379/0",
+            "JWT_SECRET": "${JWT_SECRET:-super-secret-change-in-production}",
+            "NODE_ENV": "production",
+            "LOG_LEVEL": "info",
+        }
+
     @staticmethod
     def _dockerfile_content_for_stack(
         port: int,
         service_info: "ServiceInfo | None" = None,
     ) -> str:
-        """Return the Dockerfile content string for the detected stack."""
+        """Return the Dockerfile content string for the detected stack.
+
+        Templates use ``127.0.0.1`` in all ``HEALTHCHECK`` commands and
+        pick the right probe tool for each base image.
+        """
         stack = ComposeGenerator._detect_stack(service_info)
 
         if stack == "frontend":
+            # Multi-stage: node build -> nginx:stable-alpine
+            # Handle Angular (dist/*/browser/), React (build/), Vue (dist/)
             return (
                 "FROM node:20-slim AS build\n"
                 "WORKDIR /app\n"
@@ -290,26 +412,56 @@ class ComposeGenerator:
                 "COPY . .\n"
                 "RUN npm run build\n"
                 "\n"
-                "FROM nginx:alpine\n"
-                "COPY --from=build /app/dist /usr/share/nginx/html\n"
-                "COPY --from=build /app/build /usr/share/nginx/html\n"
-                f"EXPOSE {port}\n"
+                "FROM nginx:stable-alpine\n"
+                "# Handle multiple framework dist paths\n"
+                "# Angular 17+: dist/*/browser/\n"
+                "COPY --from=build /app/dist/ /tmp/dist/\n"
+                "COPY --from=build /app/build/ /tmp/build/\n"
+                "RUN if [ -d /tmp/dist ] && ls /tmp/dist/*/browser/ "
+                ">/dev/null 2>&1; then \\\n"
+                "      cp -r /tmp/dist/*/browser/* "
+                "/usr/share/nginx/html/; \\\n"
+                "    elif [ -d /tmp/build ] && [ "
+                '"$(ls -A /tmp/build 2>/dev/null)" ]; then \\\n'
+                "      cp -r /tmp/build/* "
+                "/usr/share/nginx/html/; \\\n"
+                "    elif [ -d /tmp/dist ] && [ "
+                '"$(ls -A /tmp/dist 2>/dev/null)" ]; then \\\n'
+                "      cp -r /tmp/dist/* "
+                "/usr/share/nginx/html/; \\\n"
+                "    fi && rm -rf /tmp/dist /tmp/build\n"
+                "# SPA routing: fall back to index.html for client-side routes\n"
+                'RUN printf \'server {\\n  listen 80;\\n  location / '
+                "{\\n    root /usr/share/nginx/html;\\n    "
+                "try_files $uri $uri/ /index.html;\\n  }\\n"
+                "}\\n' > /etc/nginx/conf.d/default.conf\n"
+                "EXPOSE 80\n"
                 "HEALTHCHECK --interval=15s --timeout=5s --retries=3 \\\n"
-                f"  CMD wget -qO- http://localhost:{port}/ || exit 1\n"
+                "  CMD wget -qO- http://127.0.0.1:80/ || exit 1\n"
                 'CMD ["nginx", "-g", "daemon off;"]\n'
             )
 
         if stack == "typescript":
+            # Multi-stage: node:20-slim build -> node:20-slim runtime
             return (
-                "FROM node:20-slim\n"
+                "FROM node:20-slim AS build\n"
                 "WORKDIR /app\n"
                 "COPY package*.json ./\n"
                 "RUN npm ci\n"
                 "COPY . .\n"
                 "RUN npm run build\n"
+                "\n"
+                "FROM node:20-slim\n"
+                "WORKDIR /app\n"
+                "COPY --from=build /app/package*.json ./\n"
+                "RUN npm ci --omit=dev\n"
+                "COPY --from=build /app/dist ./dist\n"
                 f"EXPOSE {port}\n"
                 "HEALTHCHECK --interval=15s --timeout=5s --retries=3 \\\n"
-                f"  CMD curl -f http://localhost:{port}/health || exit 1\n"
+                f'  CMD node -e "const http = require(\'http\'); '
+                f"http.get('http://127.0.0.1:{port}/health', "
+                "r => process.exit(r.statusCode === 200 ? 0 : 1))"
+                '.on(\'error\', () => process.exit(1))"\n'
                 'CMD ["node", "dist/main.js"]\n'
             )
 
@@ -317,13 +469,20 @@ class ComposeGenerator:
         return (
             "FROM python:3.12-slim-bookworm\n"
             "\n"
+            "RUN apt-get update && apt-get install -y --no-install-recommends \\\n"
+            "    gcc libpq-dev && rm -rf /var/lib/apt/lists/*\n"
+            "\n"
             "WORKDIR /app\n"
             "COPY requirements.txt .\n"
             "RUN pip install --no-cache-dir -r requirements.txt\n"
             "COPY . .\n"
             f"EXPOSE {port}\n"
-            "CMD [\"python\", \"-m\", \"uvicorn\", \"main:app\","
-            f" \"--host\", \"0.0.0.0\", \"--port\", \"{port}\"]\n"
+            "HEALTHCHECK --interval=15s --timeout=5s --retries=3 \\\n"
+            f'  CMD python -c "import urllib.request; '
+            f"urllib.request.urlopen("
+            f"'http://127.0.0.1:{port}/health')\"\n"
+            f'CMD ["python", "-m", "uvicorn", "main:app",'
+            f' "--host", "0.0.0.0", "--port", "{port}"]\n'
         )
 
     def _app_service(self, svc: ServiceInfo) -> dict[str, Any]:
@@ -333,40 +492,40 @@ class ComposeGenerator:
         so they can receive traffic from Traefik (frontend) and access
         postgres/redis (backend).  Frontend services are placed on the
         frontend network only and do NOT depend on postgres/redis.
+
+        Health checks, env vars, and ports are all framework-aware — the
+        helpers ``_generate_healthcheck``, ``_generate_env_vars``, and
+        ``_get_internal_port`` select the correct values for the detected
+        stack.
         """
+        stack = self._detect_stack(svc)
+        is_frontend = stack == "frontend"
+
+        # Resolve internal port (framework-aware default if not set)
+        internal_port = self._get_internal_port(stack, svc.port)
+
+        # Frontend services serve via nginx on port 80; backend services
+        # use their framework port.  Traefik must route to the actual
+        # listener port inside the container.
+        traefik_port = 80 if is_frontend else internal_port
+
         labels = self._traefik.generate_labels(
             service_id=svc.service_id,
-            port=svc.port,
+            port=traefik_port,
         )
 
-        is_frontend = self._detect_stack(svc) == "frontend"
+        healthcheck = self._generate_healthcheck(
+            service_id=svc.service_id,
+            stack=stack,
+            internal_port=internal_port,
+            health_endpoint=svc.health_endpoint,
+        )
 
-        # Determine health check command based on stack
-        if is_frontend:
-            health_cmd = (
-                f"wget -qO- http://localhost:{svc.port}/ || exit 1"
-            )
-        else:
-            health_cmd = (
-                f"curl -f http://localhost:{svc.port}"
-                f"{svc.health_endpoint} || exit 1"
-            )
-
-        # Build environment variables — backend services get DATABASE_URL
-        # with a per-service schema search_path and REDIS_URL.
-        env: dict[str, str] = {
-            "SERVICE_ID": svc.service_id,
-            "PORT": str(svc.port),
-        }
-
-        if not is_frontend:
-            schema_name = svc.service_id.replace("-", "_") + "_schema"
-            env["DATABASE_URL"] = (
-                "postgresql://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-changeme}"
-                "@postgres:5432/${POSTGRES_DB:-app}"
-                f"?options=-c search_path={schema_name}"
-            )
-            env["REDIS_URL"] = "redis://redis:6379/0"
+        env = self._generate_env_vars(
+            service_id=svc.service_id,
+            stack=stack,
+            port=internal_port,
+        )
 
         service_def: dict[str, Any] = {
             "build": {
@@ -375,21 +534,12 @@ class ComposeGenerator:
             },
             "container_name": f"{self.project_name}-{svc.service_id}",
             "labels": labels,
-            "healthcheck": {
-                "test": [
-                    "CMD-SHELL",
-                    health_cmd,
-                ],
-                "interval": "15s",
-                "timeout": "5s",
-                "retries": 3,
-                "start_period": "30s",
-            },
+            "healthcheck": healthcheck,
             "environment": env,
-            "mem_limit": "768m",
+            "mem_limit": "384m",
             "deploy": {
                 "resources": {
-                    "limits": {"memory": "768m"},
+                    "limits": {"memory": "384m"},
                 },
             },
         }
@@ -436,23 +586,44 @@ class ComposeGenerator:
         return dockerfile
 
     @staticmethod
+    def _camel_to_snake(name: str) -> str:
+        """Convert CamelCase to snake_case (e.g. JournalEntry -> journal_entry)."""
+        import re
+        s1 = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", name)
+        return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
+
+    @staticmethod
+    def _pluralize(name: str) -> str:
+        """Naive English pluralization for table names."""
+        if name.endswith("y") and name[-2:] not in ("ey", "ay", "oy"):
+            return name[:-1] + "ies"
+        if name.endswith(("s", "sh", "ch", "x", "z")):
+            return name + "es"
+        return name + "s"
+
+    @staticmethod
     def generate_init_sql(
         output_dir: Path | str,
         services: list[ServiceInfo] | None = None,
+        *,
+        entities_by_service: dict[str, list[str]] | None = None,
     ) -> Path:
-        """Generate a PostgreSQL init script that creates per-service schemas.
+        """Generate a PostgreSQL init script that creates per-service databases.
 
         The generated ``init.sql`` is placed in ``{output_dir}/init-db/``
         so that the PostgreSQL Docker container runs it on first start via
         the ``/docker-entrypoint-initdb.d`` volume mount.
 
-        Each backend service gets a dedicated schema named
-        ``{service_id_underscored}_schema`` with ``GRANT ALL`` to the
-        default ``app`` user.
+        Each backend service gets:
+        - A dedicated database named ``{service_id_underscored}``
+        - ``uuid-ossp`` extension enabled
+        - Dual-name views for ORM compatibility when entity names are known
 
         Args:
             output_dir: Root output directory (same level as compose files).
             services: List of services.  Only non-frontend services get schemas.
+            entities_by_service: Optional mapping of service_id to entity
+                names (CamelCase) for dual-name view generation.
 
         Returns:
             Path to the written ``init.sql`` file.
@@ -463,7 +634,7 @@ class ComposeGenerator:
         init_sql_path = init_dir / "init.sql"
 
         lines: list[str] = [
-            "-- Auto-generated per-service PostgreSQL schema init",
+            "-- Auto-generated per-service PostgreSQL init",
             "-- This script runs once on first container start.",
             "",
         ]
@@ -473,17 +644,58 @@ class ComposeGenerator:
                 stack_cat = ComposeGenerator._detect_stack(svc)
                 if stack_cat == "frontend":
                     continue
-                schema_name = svc.service_id.replace("-", "_") + "_schema"
-                lines.append(f"CREATE SCHEMA IF NOT EXISTS {schema_name};")
+                db_name = svc.service_id.replace("-", "_")
+
+                lines.append(f"-- Database for {svc.service_id}")
                 lines.append(
-                    f"GRANT ALL ON SCHEMA {schema_name} "
-                    f"TO ${{POSTGRES_USER:-app}};"
+                    f"SELECT 'CREATE DATABASE {db_name}' "
+                    f"WHERE NOT EXISTS ("
+                    f"SELECT FROM pg_database WHERE datname = '{db_name}'"
+                    f")\\gexec"
                 )
+                lines.append(f"\\connect {db_name}")
+                lines.append(
+                    'CREATE EXTENSION IF NOT EXISTS "uuid-ossp";'
+                )
+                lines.append(
+                    f"GRANT ALL PRIVILEGES ON DATABASE {db_name} "
+                    f"TO app;"
+                )
+
+                # Generate dual-name views for ORM compatibility
+                entity_names = (entities_by_service or {}).get(
+                    svc.service_id, []
+                )
+                for entity in entity_names:
+                    snake = ComposeGenerator._camel_to_snake(entity)
+                    snake_plural = ComposeGenerator._pluralize(snake)
+                    # ORM table name (snake_case plural)
+                    no_sep = snake.replace("_", "")
+                    no_sep_plural = ComposeGenerator._pluralize(no_sep)
+                    # Create view alias only if names differ
+                    if no_sep_plural != snake_plural:
+                        lines.append(
+                            f"-- Dual-name view: {snake_plural} <-> "
+                            f"{no_sep_plural}"
+                        )
+                        lines.append(
+                            f"-- CREATE VIEW {no_sep_plural} AS "
+                            f"SELECT * FROM {snake_plural};"
+                        )
+
                 lines.append("")
 
-        if len(lines) <= 3:
-            # No backend services — write a no-op comment
-            lines.append("-- No backend services detected; no schemas to create.")
+        # Reconnect to default database
+        lines.append("\\connect app")
+        lines.append("")
+
+        if not services or all(
+            ComposeGenerator._detect_stack(s) == "frontend"
+            for s in (services or [])
+        ):
+            lines.append(
+                "-- No backend services detected; no databases to create."
+            )
             lines.append("")
 
         with open(init_sql_path, "w", encoding="utf-8") as f:
@@ -525,7 +737,6 @@ class ComposeGenerator:
 
         # 1. docker-compose.infra.yml
         infra = {
-            "version": "3.8",
             "services": {
                 "postgres": self._postgres_service(),
                 "redis": self._redis_service(),
@@ -544,7 +755,6 @@ class ComposeGenerator:
 
         # 2. docker-compose.build1.yml
         build1 = {
-            "version": "3.8",
             "services": {},
         }
         build1_path = output_dir / "docker-compose.build1.yml"
@@ -553,7 +763,6 @@ class ComposeGenerator:
 
         # 3. docker-compose.traefik.yml
         traefik = {
-            "version": "3.8",
             "services": {
                 "traefik": self._traefik_service(),
             },
@@ -564,7 +773,6 @@ class ComposeGenerator:
 
         # 4. docker-compose.generated.yml
         generated = {
-            "version": "3.8",
             "services": {},
         }
         for svc in services:
@@ -575,7 +783,6 @@ class ComposeGenerator:
 
         # 5. docker-compose.run4.yml
         run4 = {
-            "version": "3.8",
             "services": {},
         }
         run4_path = output_dir / "docker-compose.run4.yml"

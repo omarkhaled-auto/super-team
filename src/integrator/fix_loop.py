@@ -109,26 +109,41 @@ class ContractFixLoop:
         # ---- Launch builder subprocess --------------------------------
         proc: asyncio.subprocess.Process | None = None
         filtered_env = {k: v for k, v in os.environ.items() if k not in _FILTERED_ENV_KEYS}
-        stdout_bytes = b""
-        stderr_bytes = b""
         exit_code = -1
         start = time.monotonic()
+
+        # Redirect stdout/stderr to log files instead of PIPE.
+        # Using PIPE without reading causes deadlock when the 4KB buffer fills on Windows.
+        log_dir = builder_dir / ".agent-team"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        _stdout_log = open(log_dir / "fix_stdout.log", "w", encoding="utf-8")
+        _stderr_log = open(log_dir / "fix_stderr.log", "w", encoding="utf-8")
+
+        # Prefer agent_team_v15 (MCP-enhanced), fall back to agent_team (base).
+        builder_module = "agent_team"
+        for _mod in ("agent_team_v15", "agent_team"):
+            try:
+                __import__(_mod)
+                builder_module = _mod
+                break
+            except ImportError:
+                continue
 
         try:
             proc = await asyncio.create_subprocess_exec(
                 sys.executable,
                 "-m",
-                "agent_team",
+                builder_module,
                 "--cwd",
                 str(builder_dir),
                 "--depth",
                 "quick",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                stdout=_stdout_log,
+                stderr=_stderr_log,
                 env=filtered_env,
             )
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(), timeout=self.timeout
+            await asyncio.wait_for(
+                proc.wait(), timeout=self.timeout
             )
             exit_code = proc.returncode or 0
         except asyncio.TimeoutError:
@@ -141,10 +156,19 @@ class ContractFixLoop:
             if proc is not None and proc.returncode is None:
                 proc.kill()
                 await proc.wait()
+            # Close log file handles
+            for _fh in (_stdout_log, _stderr_log):
+                try:
+                    _fh.close()
+                except Exception:
+                    pass
 
         duration = time.monotonic() - start
-        stdout_text = stdout_bytes.decode(errors="replace") if stdout_bytes else ""
-        stderr_text = stderr_bytes.decode(errors="replace") if stderr_bytes else ""
+        # Read stdout/stderr from log files instead of pipe buffers
+        stdout_path = log_dir / "fix_stdout.log"
+        stderr_path = log_dir / "fix_stderr.log"
+        stdout_text = stdout_path.read_text(encoding="utf-8", errors="replace") if stdout_path.exists() else ""
+        stderr_text = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.exists() else ""
 
         # ---- Parse result from STATE.json ----------------------------
         from src.run4.builder import _state_to_builder_result

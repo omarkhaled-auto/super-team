@@ -25,6 +25,8 @@ class BuilderConfig:
     max_concurrent: int = 3
     timeout_per_builder: int = 1800
     depth: str = "thorough"
+    poll_interval_s: int = 30
+    stall_timeout_s: int = 600  # Kill builder if no file activity for 10 min
 
 
 @dataclass

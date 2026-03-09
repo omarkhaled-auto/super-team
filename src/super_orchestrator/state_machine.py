@@ -117,10 +117,15 @@ TRANSITIONS: list[dict[str, Any]] = [
         "conditions": ["retries_remaining"],
     },
     {
+        # Fix: Removed "advisory_only" condition — the handler in
+        # _phase_quality_check already validates that either advisory_only
+        # is true OR no fixable violations remain.  Having the condition
+        # on the transition too caused silent rejection when blocking
+        # unfixable violations existed (e.g. Docker failures), leading
+        # to an infinite quality_gate loop.
         "trigger": "skip_to_complete",
         "source": "quality_gate",
         "dest": "complete",
-        "conditions": ["advisory_only"],
     },
 ]
 

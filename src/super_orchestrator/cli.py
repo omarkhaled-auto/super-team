@@ -198,7 +198,7 @@ def init(
     typer.echo(f"State directory: {state_dir}")
     typer.echo(f"PRD copied to: {prd_dest}")
 
-    print_pipeline_header(state.pipeline_id, str(prd_path))
+    print_pipeline_header(state, pipeline_id=state.pipeline_id, prd_path=str(prd_path))
 
 
 @app.command()
@@ -431,8 +431,8 @@ async def _run_async(
     config_path_str = str(config_path) if config_path else None
 
     print_pipeline_header(
-        "pending" if not resume_flag else "resuming",
-        str(prd_path),
+        {"pipeline_id": "pending" if not resume_flag else "resuming",
+         "prd_path": str(prd_path)},
     )
 
     try:
@@ -476,7 +476,7 @@ def status() -> None:
         )
         raise typer.Exit(code=1)
 
-    print_pipeline_header(state.pipeline_id, state.prd_path)
+    print_pipeline_header(state, pipeline_id=state.pipeline_id, prd_path=state.prd_path)
     print_phase_table(state)
     print_builder_table(state)
 
@@ -522,7 +522,7 @@ async def _resume_async(config_path: Path | None) -> None:
         raise typer.Exit(code=1)
 
     typer.echo(f"Resuming pipeline {state.pipeline_id} from state '{state.current_state}'")
-    print_pipeline_header(state.pipeline_id, state.prd_path)
+    print_pipeline_header(state, pipeline_id=state.pipeline_id, prd_path=state.prd_path)
 
     config_path_str = str(config_path) if config_path else state.config_path or None
 
