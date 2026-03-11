@@ -39,3 +39,6 @@ data/chroma/
 # Agent-team state (regenerated per run)
 .agent-team/STATE.json
 .agent-team/FIX_CYCLE_LOG.md
+
+# Worktrees
+.worktrees/
