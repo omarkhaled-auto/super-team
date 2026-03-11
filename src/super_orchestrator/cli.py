@@ -425,7 +425,10 @@ async def _run_async(
     prd_path: Path, resume_flag: bool, config_path: Path | None
 ) -> None:
     """Async implementation of the run command."""
+    from src.super_orchestrator.preflight import run_preflight_checks
     from src.super_orchestrator.pipeline import execute_pipeline
+
+    run_preflight_checks()
 
     config = load_super_config(config_path)
     config_path_str = str(config_path) if config_path else None

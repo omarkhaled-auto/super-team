@@ -1,0 +1,534 @@
+{
+  "section_a": {
+    "A1": {
+      "name": "PRD Parsed Successfully",
+      "expected": "ParsedPRD object returned without errors",
+      "actual": "ParsedPRD with 27 entities",
+      "status": "PASS"
+    },
+    "A2": {
+      "name": "Decompose Returns ServiceMap",
+      "expected": "ServiceMap object returned",
+      "actual": "ServiceMap with 2 services",
+      "status": "PASS"
+    },
+    "A3": {
+      "name": "ServiceMap Has Correct 6 Services",
+      "expected": [
+        "accounts-service",
+        "auth-service",
+        "frontend",
+        "invoicing-service",
+        "notification-service",
+        "reporting-service"
+      ],
+      "actual": [
+        "miscellaneous",
+        "owning-service"
+      ],
+      "missing": [
+        "accounts-service",
+        "auth-service",
+        "frontend",
+        "invoicing-service",
+        "notification-service",
+        "reporting-service"
+      ],
+      "extras": [
+        "miscellaneous",
+        "owning-service"
+      ],
+      "status": "FAIL"
+    },
+    "A4": {
+      "name": "Each Service Has Correct Tech Stack",
+      "expected": {
+        "auth-service": [
+          "Python",
+          "FastAPI"
+        ],
+        "accounts-service": [
+          "TypeScript",
+          "NestJS"
+        ],
+        "invoicing-service": [
+          "Python",
+          "FastAPI"
+        ],
+        "reporting-service": [
+          "Python",
+          "FastAPI"
+        ],
+        "notification-service": [
+          "TypeScript",
+          "NestJS"
+        ],
+        "frontend": [
+          "Angular",
+          null
+        ]
+      },
+      "actual": {
+        "owning-service": [
+          "Python",
+          "FastAPI"
+        ],
+        "miscellaneous": [
+          "Python",
+          "FastAPI"
+        ]
+      },
+      "issues": [
+        "auth-service: NOT FOUND",
+        "accounts-service: NOT FOUND",
+        "invoicing-service: NOT FOUND",
+        "reporting-service: NOT FOUND",
+        "notification-service: NOT FOUND",
+        "frontend: NOT FOUND"
+      ],
+      "status": "FAIL"
+    },
+    "A5": {
+      "name": "Entities Extracted Correctly",
+      "expected": [
+        "Account",
+        "AuditEntry",
+        "FiscalPeriod",
+        "Invoice",
+        "InvoiceLine",
+        "JournalEntry",
+        "JournalLine",
+        "Notification",
+        "Payment",
+        "Role",
+        "Tenant",
+        "User"
+      ],
+      "actual": [
+        "Account",
+        "All",
+        "AuditEntry",
+        "Concurrent",
+        "DataIntegrity",
+        "Docker",
+        "Domain",
+        "EntityRelationships",
+        "EventChains",
+        "EventsPublished",
+        "FiscalPeriod",
+        "Invoice",
+        "InvoiceLine",
+        "JournalEntry",
+        "JournalLine",
+        "Notification",
+        "Observability",
+        "Pages",
+        "Payment",
+        "Reliability",
+        "Role",
+        "SeedData",
+        "SuccessCriteria",
+        "Tenant",
+        "User",
+        "UserRolesAndPermissions",
+        "With"
+      ],
+      "missing": [],
+      "bogus": [
+        "All",
+        "Concurrent",
+        "DataIntegrity",
+        "Docker",
+        "Domain",
+        "EntityRelationships",
+        "EventChains",
+        "EventsPublished",
+        "Observability",
+        "Pages",
+        "Reliability",
+        "SeedData",
+        "SuccessCriteria",
+        "UserRolesAndPermissions",
+        "With"
+      ],
+      "status": "FAIL"
+    },
+    "A6": {
+      "name": "Entity Ownership Assigned Correctly",
+      "expected": {
+        "auth-service": [
+          "Role",
+          "Tenant",
+          "User"
+        ],
+        "accounts-service": [
+          "Account",
+          "AuditEntry",
+          "FiscalPeriod",
+          "JournalEntry",
+          "JournalLine"
+        ],
+        "invoicing-service": [
+          "Invoice",
+          "InvoiceLine",
+          "Payment"
+        ],
+        "notification-service": [
+          "Notification"
+        ]
+      },
+      "actual": {
+        "owning-service": [
+          "Account",
+          "All",
+          "FiscalPeriod",
+          "Invoice",
+          "InvoiceLine",
+          "JournalEntry",
+          "JournalLine",
+          "Notification",
+          "Payment",
+          "Role",
+          "Tenant",
+          "User"
+        ],
+        "miscellaneous": [
+          "AuditEntry",
+          "Concurrent",
+          "DataIntegrity",
+          "Docker",
+          "Domain",
+          "EntityRelationships",
+          "EventChains",
+          "EventsPublished",
+          "Observability",
+          "Pages",
+          "Reliability",
+          "SeedData",
+          "SuccessCriteria",
+          "UserRolesAndPermissions",
+          "With"
+        ]
+      },
+      "dm_ownership": {
+        "User": "Owning Service",
+        "Tenant": "Owning Service",
+        "Role": "Owning Service",
+        "Account": "Owning Service",
+        "JournalEntry": "Owning Service",
+        "JournalLine": "Owning Service",
+        "FiscalPeriod": "Owning Service",
+        "Invoice": "Owning Service",
+        "InvoiceLine": "Owning Service",
+        "Payment": "Owning Service",
+        "Notification": "Owning Service",
+        "AuditEntry": "Miscellaneous",
+        "EntityRelationships": "Miscellaneous",
+        "EventsPublished": "Miscellaneous",
+        "EventChains": "Miscellaneous",
+        "UserRolesAndPermissions": "Miscellaneous",
+        "Pages": "Miscellaneous",
+        "Observability": "Miscellaneous",
+        "DataIntegrity": "Miscellaneous",
+        "Reliability": "Miscellaneous",
+        "Docker": "Miscellaneous",
+        "SeedData": "Miscellaneous",
+        "SuccessCriteria": "Miscellaneous",
+        "Domain": "Miscellaneous",
+        "With": "Miscellaneous",
+        "Concurrent": "Miscellaneous",
+        "All": "Owning Service"
+      },
+      "issues": [
+        "Role should be in auth-service, but is in ['owning-service']",
+        "User should be in auth-service, but is in ['owning-service']",
+        "Tenant should be in auth-service, but is in ['owning-service']",
+        "JournalLine should be in accounts-service, but is in ['owning-service']",
+        "FiscalPeriod should be in accounts-service, but is in ['owning-service']",
+        "JournalEntry should be in accounts-service, but is in ['owning-service']",
+        "Account should be in accounts-service, but is in ['owning-service']",
+        "AuditEntry should be in accounts-service, but is in ['miscellaneous']",
+        "InvoiceLine should be in invoicing-service, but is in ['owning-service']",
+        "Payment should be in invoicing-service, but is in ['owning-service']",
+        "Invoice should be in invoicing-service, but is in ['owning-service']",
+        "Notification should be in notification-service, but is in ['owning-service']"
+      ],
+      "status": "FAIL"
+    },
+    "A7": {
+      "name": "Cross-Service References with Correct Types",
+      "actual_relationships": [
+        "User BELONGS_TO Tenant",
+        "Account BELONGS_TO Account",
+        "Account BELONGS_TO Tenant",
+        "JournalEntry BELONGS_TO User",
+        "FiscalPeriod BELONGS_TO Tenant",
+        "User HAS_MANY JournalEntry",
+        "User HAS_MANY Invoice",
+        "Account HAS_MANY JournalLine",
+        "JournalEntry HAS_MANY JournalLine",
+        "Invoice HAS_MANY InvoiceLine",
+        "Invoice HAS_MANY Payment",
+        "User OWNS Role",
+        "InvoiceLine REFERENCES Account",
+        "Payment REFERENCES Invoice",
+        "Notification REFERENCES User"
+      ],
+      "type_counts": {
+        "BELONGS_TO": 5,
+        "HAS_MANY": 6,
+        "OWNS": 1,
+        "REFERENCES": 3
+      },
+      "has_many": 6,
+      "belongs_to": 5,
+      "references": 3,
+      "status": "PASS"
+    },
+    "A8": {
+      "name": "State Machines Identified",
+      "expected": [
+        "FiscalPeriod",
+        "Invoice",
+        "JournalEntry"
+      ],
+      "actual": [
+        "FiscalPeriod",
+        "Invoice",
+        "JournalEntry"
+      ],
+      "missing": [],
+      "extra": [],
+      "status": "PASS"
+    },
+    "A9": {
+      "name": "State Machine Transitions Complete",
+      "details": {
+        "Invoice": {
+          "states": [
+            "approved",
+            "draft",
+            "paid",
+            "posted",
+            "submitted",
+            "voided"
+          ],
+          "state_count": 6,
+          "transitions": [
+            "? \u2192 ? (submit)",
+            "? \u2192 ? (approve)",
+            "? \u2192 ? (reject)",
+            "? \u2192 ? (post)",
+            "? \u2192 ? (pay)",
+            "? \u2192 ? (void)"
+          ],
+          "transition_count": 6,
+          "missing_states": []
+        },
+        "JournalEntry": {
+          "states": [
+            "approved",
+            "draft",
+            "pending_review",
+            "posted",
+            "reversed"
+          ],
+          "state_count": 5,
+          "transitions": [
+            "? \u2192 ? (submit)",
+            "? \u2192 ? (approve)",
+            "? \u2192 ? (reject)",
+            "? \u2192 ? (post)",
+            "? \u2192 ? (reverse)"
+          ],
+          "transition_count": 5,
+          "missing_states": []
+        },
+        "FiscalPeriod": {
+          "states": [
+            "closed",
+            "closing",
+            "locked",
+            "open"
+          ],
+          "state_count": 4,
+          "transitions": [
+            "? \u2192 ? (initiate_close)",
+            "? \u2192 ? (complete_close)",
+            "? \u2192 ? (reopen)",
+            "? \u2192 ? (lock)"
+          ],
+          "transition_count": 4,
+          "missing_states": []
+        }
+      },
+      "issues": [],
+      "status": "PASS"
+    },
+    "A10": {
+      "name": "OpenAPI Contract Stubs Generated",
+      "expected": "\u22655 OpenAPI stubs (one per backend service)",
+      "actual_count": 2,
+      "details": [
+        {
+          "service": "owning-service",
+          "endpoint_count": 24,
+          "endpoints": [
+            "/api/accounts",
+            "/api/accounts/{id}",
+            "/api/alls",
+            "/api/alls/{id}",
+            "/api/fiscal-periods",
+            "/api/fiscal-periods/{id}",
+            "/api/invoice-lines",
+            "/api/invoice-lines/{id}",
+            "/api/invoices",
+            "/api/invoices/{id}",
+            "/api/journal-entrys",
+            "/api/journal-entrys/{id}",
+            "/api/journal-lines",
+            "/api/journal-lines/{id}",
+            "/api/notifications",
+            "/api/notifications/{id}",
+            "/api/payments",
+            "/api/payments/{id}",
+            "/api/roles",
+            "/api/roles/{id}",
+            "/api/tenants",
+            "/api/tenants/{id}",
+            "/api/users",
+            "/api/users/{id}"
+          ]
+        },
+        {
+          "service": "miscellaneous",
+          "endpoint_count": 30,
+          "endpoints": [
+            "/api/audit-entrys",
+            "/api/audit-entrys/{id}",
+            "/api/concurrents",
+            "/api/concurrents/{id}",
+            "/api/data-integritys",
+            "/api/data-integritys/{id}",
+            "/api/dockers",
+            "/api/dockers/{id}",
+            "/api/domains",
+            "/api/domains/{id}",
+            "/api/entity-relationships",
+            "/api/entity-relationships/{id}",
+            "/api/event-chains",
+            "/api/event-chains/{id}",
+            "/api/events-publisheds",
+            "/api/events-publisheds/{id}",
+            "/api/observabilitys",
+            "/api/observabilitys/{id}",
+            "/api/pages",
+            "/api/pages/{id}",
+            "/api/reliabilitys",
+            "/api/reliabilitys/{id}",
+            "/api/seed-datas",
+            "/api/seed-datas/{id}",
+            "/api/success-criterias",
+            "/api/success-criterias/{id}",
+            "/api/user-roles-and-permissions",
+            "/api/user-roles-and-permissions/{id}",
+            "/api/withs",
+            "/api/withs/{id}"
+          ]
+        }
+      ],
+      "status": "FAIL"
+    },
+    "A11": {
+      "name": "AsyncAPI Contract Stubs Generated",
+      "expected": "\u22651 AsyncAPI stub with PRD events",
+      "actual_count": 0,
+      "details": [],
+      "status": "FAIL"
+    },
+    "A12": {
+      "name": "Interview Questions",
+      "status": "N/A"
+    },
+    "A13": {
+      "name": "Relationships Use Correct Types",
+      "type_distribution": {
+        "BELONGS_TO": 5,
+        "HAS_MANY": 6,
+        "OWNS": 1,
+        "REFERENCES": 3
+      },
+      "status": "PASS"
+    },
+    "A14": {
+      "name": "Service Boundaries Non-Overlapping",
+      "issues": [],
+      "status": "PASS"
+    },
+    "A15": {
+      "name": "Decomposition Completed Without Errors",
+      "errors": [],
+      "status": "PASS"
+    }
+  },
+  "section_b": {
+    "B1": {
+      "name": "Contract Engine Modules Import Without Crash",
+      "error": "Primary: No module named 'src.contract_engine.engine', Fallback: cannot import name 'engine' from 'src.contract_engine' (C:\\MY_PROJECTS\\super-team\\src\\contract_engine\\__init__.py)",
+      "status": "FAIL"
+    },
+    "B2": {
+      "name": "OpenAPI Contracts Registered",
+      "count": 2,
+      "note": "Scored from generated stubs (no CE instance)",
+      "status": "FAIL"
+    },
+    "B3": {
+      "name": "AsyncAPI Contracts Registered",
+      "count": 0,
+      "status": "FAIL"
+    },
+    "B4": {
+      "name": "All Contracts Validate",
+      "issues": [],
+      "status": "PASS"
+    },
+    "B5": {
+      "name": "Schemathesis Test Generation",
+      "detail": "No schemathesis integration module found",
+      "status": "FAIL"
+    },
+    "B6": {
+      "name": "Pact Contract Generation",
+      "detail": "No pact generation module found",
+      "status": "FAIL"
+    },
+    "B7": {
+      "name": "Contract Listing",
+      "count": 2,
+      "status": "PASS"
+    },
+    "B8": {
+      "name": "Breaking Change Detection",
+      "detail": "No breaking change detection found",
+      "status": "FAIL"
+    },
+    "B9": {
+      "name": "Cross-Service Contract References",
+      "cross_refs": [],
+      "status": "FAIL"
+    },
+    "B10": {
+      "name": "Contract Registration Clean",
+      "error": null,
+      "status": "PASS"
+    }
+  },
+  "builder_checks": {},
+  "scores": {
+    "section_a": "8/14",
+    "section_b": "3/10",
+    "builder": "0/12"
+  },
+  "verdict": "NO-GO"
+}

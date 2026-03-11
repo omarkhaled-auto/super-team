@@ -293,7 +293,7 @@ RUN if [ -d "alembic" ] || [ -d "migrations" ]; then \\
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \\
+HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=5 \\
     CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/{service_id}/health')"
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
@@ -320,7 +320,7 @@ COPY --from=build /app/package.json ./
 
 EXPOSE 8080
 
-HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \\
+HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=5 \\
     CMD node -e "const http = require('http'); http.get('http://127.0.0.1:8080/api/{service_id}/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
 
 CMD ["node", "dist/main.js"]
@@ -333,9 +333,45 @@ COPY package*.json ./
 RUN npm ci --omit=dev
 COPY . .
 EXPOSE 8080
-HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \\
+HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=5 \\
     CMD wget -qO- http://127.0.0.1:8080/api/{service_id}/health || exit 1
 CMD ["node", "dist/main.js"]
+"""
+
+_DOTNET_DOCKERFILE_TEMPLATE = """\
+# .NET 8 Multi-Stage Build
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+WORKDIR /src
+
+# Copy solution and project files first (layer caching)
+COPY *.sln ./
+COPY */*.csproj ./
+RUN for file in $(ls *.csproj); do \\
+        dir=$(basename "$file" .csproj); \\
+        mkdir -p "$dir" && mv "$file" "$dir/"; \\
+    done
+RUN dotnet restore
+
+# Copy everything else and build
+COPY . .
+RUN dotnet publish -c Release -o /app/publish --no-restore
+
+# Runtime stage
+FROM mcr.microsoft.com/dotnet/aspnet:8.0
+WORKDIR /app
+COPY --from=build /app/publish .
+
+# Create non-root user
+RUN adduser --disabled-password --gecos "" appuser && chown -R appuser /app
+USER appuser
+
+ENV ASPNETCORE_URLS=http://+:8080
+EXPOSE 8080
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=5 \\
+    CMD wget -qO- http://127.0.0.1:8080/api/{service_id}/health || exit 1
+
+ENTRYPOINT ["dotnet", "App.dll"]
 """
 
 
@@ -779,7 +815,7 @@ def _dict_to_config(raw: dict[str, Any]) -> tuple[dict[str, Any], set[str]]:
     unknown = set(raw.keys()) - _KNOWN_KEYS
     parsed = {k: v for k, v in raw.items() if k in _KNOWN_KEYS}
     # Ensure defaults for required fields
-    parsed.setdefault("depth", "thorough")
+    parsed.setdefault("depth", "exhaustive")
     parsed.setdefault("e2e_testing", True)
     return parsed, unknown
 
@@ -801,6 +837,12 @@ async def run_architect_phase(
     and ``state.contract_registry_path``.
     """
     logger.info("Starting architect phase")
+    logger.info(
+        "Architect config — strategy: %s, max_services: %d, min_entities: %d",
+        config.architect.decomposition_strategy,
+        config.architect.max_services,
+        config.architect.min_entities_per_service,
+    )
     cost_tracker.start_phase(PHASE_ARCHITECT)
     phase_cost = 0.0
     output_dir = Path(config.output_dir)
@@ -1421,7 +1463,7 @@ async def run_parallel_builders(
                 domain=svc.get("domain", "unknown"),
                 stack=svc.get("stack", {}),
                 port=svc.get("port", 8080),
-                health_endpoint=svc.get("health_endpoint", "/health"),
+                health_endpoint=svc.get("health_endpoint", f"/api/{sid}/health"),
                 docker_image=svc.get("docker_image", ""),
                 estimated_loc=svc.get("estimated_loc", 0),
             )
@@ -1618,11 +1660,84 @@ _STACK_INSTRUCTIONS: dict[str, str] = {
         "- Multi-stage build: node:20-slim for build, nginx:stable-alpine for serve\n"
         "- Angular SSR is NOT required — client-side SPA only\n"
     ),
+    "dotnet": (
+        "## Framework Requirements: ASP.NET Core / .NET 8\n\n"
+        "### Project Structure (Clean Architecture)\n"
+        "```\n"
+        "{ServiceName}/\n"
+        "├── {ServiceName}.Api/              ← Web API project (entry point)\n"
+        "│   ├── Controllers/                ← API controllers\n"
+        "│   ├── Middleware/                  ← Auth, CORS, error handling, logging\n"
+        "│   ├── Program.cs                  ← Host builder + DI configuration\n"
+        "│   ├── appsettings.json            ← Configuration (DB, JWT, Redis)\n"
+        "│   └── Dockerfile\n"
+        "├── {ServiceName}.Application/      ← CQRS commands, queries, validators\n"
+        "│   ├── Commands/\n"
+        "│   ├── Queries/\n"
+        "│   ├── Validators/                 ← FluentValidation\n"
+        "│   └── Interfaces/                 ← Service interfaces\n"
+        "├── {ServiceName}.Domain/           ← Entities, enums, domain events\n"
+        "│   ├── Entities/\n"
+        "│   ├── Enums/\n"
+        "│   └── Events/\n"
+        "├── {ServiceName}.Infrastructure/   ← EF Core, Redis, external services\n"
+        "│   ├── Data/\n"
+        "│   │   ├── ApplicationDbContext.cs\n"
+        "│   │   ├── Configurations/         ← EF Core entity configurations\n"
+        "│   │   └── Migrations/\n"
+        "│   ├── Services/\n"
+        "│   └── DependencyInjection.cs\n"
+        "└── {ServiceName}.sln\n"
+        "```\n\n"
+        "### Assembly Name (CRITICAL for Docker)\n"
+        "- In the Api project's `.csproj` file, add: `<AssemblyName>App</AssemblyName>` inside `<PropertyGroup>`\n"
+        "- This ensures the Docker ENTRYPOINT `dotnet App.dll` works correctly\n"
+        "- Without this, the container will fail to start because the DLL will be named `{ServiceName}.Api.dll` instead of `App.dll`\n"
+        "- This is the standard pattern used in enterprise .NET Docker deployments\n\n"
+        "### NuGet Dependencies (MUST include)\n"
+        "- Microsoft.AspNetCore.Authentication.JwtBearer\n"
+        "- Microsoft.EntityFrameworkCore (+ .Design + Npgsql provider)\n"
+        "- FluentValidation.AspNetCore\n"
+        "- MediatR (for CQRS)\n"
+        "- Serilog.AspNetCore (structured logging)\n"
+        "- StackExchange.Redis\n"
+        "- Swashbuckle.AspNetCore (Swagger)\n\n"
+        "### Database Connection\n"
+        "- Use `Npgsql` provider for PostgreSQL\n"
+        "- Connection string from `appsettings.json` → `IConfiguration`\n"
+        "- Environment variable override: `ConnectionStrings__DefaultConnection`\n"
+        "- Use EF Core migrations (NOT synchronize/auto-create)\n\n"
+        "### Authentication\n"
+        "- JWT Bearer authentication with HS256\n"
+        "- Read `JWT_SECRET` from environment / appsettings\n"
+        "- Token payload: `sub` (user ID), `tenant_id`, `role`, `email`\n"
+        "- Add `[Authorize]` attribute on all mutation endpoints\n"
+        "- Add `[AllowAnonymous]` on health and login endpoints\n\n"
+        "### Health Endpoint\n"
+        "- `GET /api/{service-name}/health`\n"
+        '- Returns: `{"status": "healthy", "service": "{service-name}", "timestamp": "..."}`\n'
+        "- HTTP 200\n\n"
+        "### Port\n"
+        '- Listen on port 8080: `builder.WebHost.UseUrls("http://0.0.0.0:8080")`\n'
+        "- This matches Docker HEALTHCHECK and Traefik routing\n\n"
+        "### Multi-Tenant Isolation\n"
+        "- All entities MUST have `TenantId` (Guid) property\n"
+        "- Global query filter in DbContext: `builder.HasQueryFilter(e => e.TenantId == _tenantId)`\n"
+        "- TenantId extracted from JWT `tenant_id` claim in middleware\n\n"
+        "### State Machines\n"
+        "- Use enum for states, `Dictionary<State, HashSet<State>>` for transitions\n"
+        "- Validate transitions before applying — return 409 Conflict on invalid\n"
+        "- Publish domain event on every state change\n\n"
+        "### Error Handling\n"
+        "- Global exception handler middleware\n"
+        "- Return RFC 7807 Problem Details format\n"
+        "- Map: `ValidationException → 400`, `NotFoundException → 404`, `ConflictException → 409`\n\n"
+    ),
 }
 
 
 def _detect_stack_category(stack: dict[str, str] | str | None) -> str:
-    """Categorise a stack dict into python / typescript / frontend."""
+    """Categorise a stack dict into python / typescript / frontend / dotnet."""
     if not stack or not isinstance(stack, dict):
         return "python"
     language = (stack.get("language") or "").lower()
@@ -1637,6 +1752,17 @@ def _detect_stack_category(stack: dict[str, str] | str | None) -> str:
         return "typescript"
     if framework in ("nestjs", "nest", "express", "koa", "hapi", "fastify"):
         return "typescript"
+
+    # C# / .NET detection
+    if language in ("csharp", "c#", "cs") or framework in (
+        "asp.net", "asp.net core", ".net", "dotnet", "entity framework",
+    ):
+        return "dotnet"
+
+    logger.warning(
+        "Unknown stack language=%r framework=%r, defaulting to 'python'",
+        language, framework,
+    )
     return "python"
 
 
@@ -2362,7 +2488,7 @@ async def _run_single_builder(
             state_json_path = output_dir / ".agent-team" / "STATE.json"
             timeout_s = config.builder.timeout_per_builder
             poll_interval_s = config.builder.poll_interval_s
-            stall_timeout_s = getattr(config.builder, "stall_timeout_s", 600)
+            stall_timeout_s = getattr(config.builder, "stall_timeout_s", 3600)
             start_ts = time.monotonic()
             last_log_phase: str | None = None
             last_heartbeat_time: float = 0.0
@@ -2370,7 +2496,7 @@ async def _run_single_builder(
             polling_complete = False
             _last_activity_ts = time.monotonic()  # Track file activity for stall detection
             _prev_newest_mtime = 0.0  # Track last-seen newest file mtime
-            _planning_phase_timeout = max(stall_timeout_s, 2700)  # 45 min during planning
+            _planning_phase_timeout = max(stall_timeout_s, 5400)  # 90 min during planning
             _building_phase_timeout = stall_timeout_s  # Normal timeout once building
 
             while True:
@@ -2540,15 +2666,26 @@ async def _run_single_builder(
                                 break
 
                             # Check CPU usage before killing (process may be actively working)
+                            # Also check child processes (e.g. Claude CLI subprocesses)
                             _skip_kill = False
                             try:
                                 import psutil
                                 _p = psutil.Process(proc.pid)
                                 _cpu = _p.cpu_percent(interval=2)
-                                if _cpu > 5:
+                                _child_cpu = 0.0
+                                try:
+                                    for _child in _p.children(recursive=True):
+                                        try:
+                                            _child_cpu += _child.cpu_percent(interval=0.5)
+                                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                                            pass
+                                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                                    pass
+                                _total_cpu = _cpu + _child_cpu
+                                if _total_cpu > 5:
                                     logger.info(
-                                        "Builder %s appears active (CPU=%.1f%%), resetting stall timer",
-                                        service_info.service_id, _cpu,
+                                        "Builder %s appears active (CPU=%.1f%% parent + %.1f%% children), resetting stall timer",
+                                        service_info.service_id, _cpu, _child_cpu,
                                     )
                                     _last_activity_ts = time.monotonic()
                                     _skip_kill = True
@@ -3150,7 +3287,7 @@ def _ensure_frontend_dockerfile(service_dir: Path, service_info: ServiceInfo) ->
         if "HEALTHCHECK" not in content:
             logger.warning("Frontend Dockerfile missing HEALTHCHECK — appending")
             content += (
-                "\nHEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \\\n"
+                "\nHEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=5 \\\n"
                 '    CMD wget -qO- http://127.0.0.1:80/ || exit 1\n'
             )
             dockerfile.write_text(content, encoding="utf-8")
@@ -3224,7 +3361,7 @@ def _ensure_frontend_dockerfile(service_dir: Path, service_info: ServiceInfo) ->
             f"RUN printf '{_NGINX_CONF}' > /etc/nginx/conf.d/default.conf\n"
             "\n"
             "EXPOSE 80\n"
-            "HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \\\n"
+            "HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=5 \\\n"
             "    CMD wget -qO- http://127.0.0.1:80/ || exit 1\n"
         )
     else:
@@ -3237,7 +3374,7 @@ def _ensure_frontend_dockerfile(service_dir: Path, service_info: ServiceInfo) ->
             f"RUN printf '{_NGINX_CONF}' > /etc/nginx/conf.d/default.conf\n"
             "\n"
             "EXPOSE 80\n"
-            "HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \\\n"
+            "HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=5 \\\n"
             "    CMD wget -qO- http://127.0.0.1:80/ || exit 1\n"
         )
 
@@ -3280,21 +3417,26 @@ def _ensure_backend_dockerfile(
             )
             if stack in ("python", "fastapi", "flask"):
                 hc = (
-                    "\nHEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \\\n"
+                    "\nHEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=5 \\\n"
                     f'    CMD python -c "import urllib.request; urllib.request.urlopen('
                     f"'http://127.0.0.1:8000/api/{service_id}/health')\"\n"
                 )
             elif stack in ("node", "nestjs", "express", "typescript"):
                 hc = (
-                    "\nHEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \\\n"
+                    "\nHEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=5 \\\n"
                     f'    CMD node -e "const http = require(\'http\'); '
                     f"http.get('http://127.0.0.1:8080/api/{service_id}/health', "
                     f"r => process.exit(r.statusCode === 200 ? 0 : 1))"
                     f".on('error', () => process.exit(1))\"\n"
                 )
+            elif stack in ("dotnet", "csharp", "aspnet"):
+                hc = (
+                    "\nHEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=5 \\\n"
+                    f"    CMD wget -qO- http://127.0.0.1:8080/api/{service_id}/health || exit 1\n"
+                )
             else:
                 hc = (
-                    "\nHEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \\\n"
+                    "\nHEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=5 \\\n"
                     f"    CMD wget -qO- http://127.0.0.1:8080/api/{service_id}/health || exit 1\n"
                 )
             content += hc
@@ -3310,6 +3452,8 @@ def _ensure_backend_dockerfile(
         content = _FASTAPI_DOCKERFILE_TEMPLATE.format(service_id=service_id)
     elif stack in ("node", "nestjs", "express", "typescript"):
         content = _NESTJS_DOCKERFILE_TEMPLATE.format(service_id=service_id)
+    elif stack in ("dotnet", "csharp", "aspnet"):
+        content = _DOTNET_DOCKERFILE_TEMPLATE.format(service_id=service_id)
     else:
         content = _GENERIC_DOCKERFILE_TEMPLATE.format(service_id=service_id)
 
@@ -3524,7 +3668,7 @@ async def run_integration_phase(
                 domain=svc.get("domain", "unknown"),
                 stack=svc.get("stack", {}),
                 port=svc.get("port", 8080),
-                health_endpoint=svc.get("health_endpoint", "/health"),
+                health_endpoint=svc.get("health_endpoint", f"/api/{sid}/health"),
                 docker_image=svc.get("docker_image", ""),
                 estimated_loc=svc.get("estimated_loc", 0),
             )

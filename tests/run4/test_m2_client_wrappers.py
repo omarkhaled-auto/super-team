@@ -725,7 +725,11 @@ class TestArchClientDecomposeReturnsResult:
 
         # Verify the wrapper delegated to the correct MCP tool
         session.call_tool.assert_awaited_once_with(
-            "decompose", {"prd_text": sample_prd_text},
+            "decompose", {
+                "prd_text": sample_prd_text,
+                "max_services": 5,
+                "min_entities_per_service": 6,
+            },
         )
 
 

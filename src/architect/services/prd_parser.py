@@ -218,6 +218,7 @@ class ParsedPRD:
     state_machines: list[dict[str, Any]] = field(default_factory=list)
     interview_questions: list[str] = field(default_factory=list)
     events: list[dict[str, Any]] = field(default_factory=list)
+    explicit_services: list[dict[str, Any]] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +277,7 @@ def parse_prd(prd_text: str) -> ParsedPRD:
     technology_hints = _extract_technology_hints(text)
     state_machines = _extract_state_machines(text, entities)
     events = _extract_events(text, entities, state_machines, bounded_contexts)
+    explicit_services = _extract_explicit_services(text)
     interview_questions = _generate_interview_questions(
         text, entities, relationships, bounded_contexts, technology_hints,
     )
@@ -289,6 +291,7 @@ def parse_prd(prd_text: str) -> ParsedPRD:
         state_machines=state_machines,
         interview_questions=interview_questions,
         events=events,
+        explicit_services=explicit_services,
     )
 
 
@@ -343,12 +346,168 @@ def _extract_project_name(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _extract_entities_from_authoritative_table(text: str) -> list[dict[str, Any]]:
+    """Extract entities from an authoritative structured table.
+
+    Looks for a table with header columns including "Entity" AND at least one
+    of "Owning Service", "Fields", or "Referenced By".  This is the
+    highest-confidence entity source — an explicit definition table.
+
+    If found, returns entities with name, owning_context, and fields populated
+    directly from the table columns.  Returns empty list if no such table.
+    """
+    # Match a table whose header contains "Entity" and an ownership/fields column
+    table_pattern = re.compile(
+        r"^(\|[^\n]*\|)\s*\n"          # header row
+        r"\|[-:\s|]+\|\s*\n"            # separator
+        r"((?:\|[^\n]+\n?)+)",          # data rows
+        re.MULTILINE,
+    )
+
+    for m in table_pattern.finditer(text):
+        header_line = m.group(1)
+        headers = [h.strip().lower() for h in header_line.strip().strip("|").split("|")]
+
+        # Identify column indices — require "entity" and at least one of the
+        # other structured columns to distinguish from generic tables.
+        entity_col = None
+        owning_col = None
+        referenced_col = None
+        fields_col = None
+        description_col = None
+
+        for i, h in enumerate(headers):
+            if h in ("entity", "entity name"):
+                entity_col = i
+            elif "owning" in h or (h == "service" and entity_col is not None):
+                owning_col = i
+            elif "referenced" in h or "used by" in h or "consumed" in h:
+                referenced_col = i
+            elif h in ("fields", "attributes", "columns"):
+                fields_col = i
+            elif h in ("description", "desc", "purpose"):
+                description_col = i
+
+        # Must have entity column + at least one structural column
+        if entity_col is None:
+            continue
+        if owning_col is None and fields_col is None:
+            continue
+
+        rows_text = m.group(2).strip()
+        entities: list[dict[str, Any]] = []
+
+        for row_line in rows_text.splitlines():
+            cols = [c.strip() for c in row_line.strip().strip("|").split("|")]
+            if len(cols) <= entity_col:
+                continue
+
+            raw_name = cols[entity_col].strip().strip("`* ")
+            if not raw_name or raw_name.startswith("-"):
+                continue
+            name = _to_pascal(raw_name)
+            if not name:
+                continue
+
+            # Extract owning service
+            owning_service = None
+            if owning_col is not None and len(cols) > owning_col:
+                owning_service = cols[owning_col].strip()
+                if owning_service.startswith("-"):
+                    owning_service = None
+
+            # Extract fields from comma-separated list
+            fields: list[dict[str, Any]] = []
+            if fields_col is not None and len(cols) > fields_col:
+                fields_text = cols[fields_col].strip()
+                if fields_text and not fields_text.startswith("-"):
+                    for raw_field in fields_text.split(","):
+                        raw_field = raw_field.strip()
+                        if not raw_field:
+                            continue
+                        # Extract field name: take first identifier, strip []
+                        # e.g. "type (asset/liability)" → "type"
+                        # e.g. "permissions[]" → "permissions"
+                        # e.g. "lines[]" → "lines"
+                        field_match = re.match(r"(\w+)", raw_field)
+                        if field_match:
+                            fname = _to_snake(field_match.group(1))
+                            # Check for parenthetical type hint: "amount (decimal)"
+                            paren_type = re.search(r"\((\w+)\)", raw_field)
+                            if paren_type:
+                                ftype = _normalise_type(paren_type.group(1))
+                            else:
+                                ftype = _infer_field_type(fname)
+                            fields.append({
+                                "name": fname,
+                                "type": ftype,
+                                "required": True,
+                            })
+
+            # Extract description from table column or generate fallback
+            description = ""
+            if description_col is not None and len(cols) > description_col:
+                description = cols[description_col].strip()
+                if description.startswith("-"):
+                    description = ""
+            if not description:
+                svc_label = owning_service or "system"
+                description = f"{name} entity in the {svc_label} service domain"
+
+            entities.append({
+                "name": name,
+                "description": description,
+                "fields": fields,
+                "owning_context": owning_service,
+            })
+
+        # If we found 3+ entities from this authoritative table, return them
+        if len(entities) >= 3:
+            return entities
+
+    return []
+
+
+def _collect_heading_derived_names(text: str) -> set[str]:
+    """Collect names derived from all markdown section headings.
+
+    Returns a set of lowercase PascalCase names that correspond to headings.
+    For example, heading ``### Data Integrity`` yields ``"datintegrity"``
+    (lowered PascalCase).  Used as a rejection guard for fallback entity
+    extraction strategies.
+    """
+    heading_pat = re.compile(r"^#{1,6}\s+(.+)", re.MULTILINE)
+    names: set[str] = set()
+    for m in heading_pat.finditer(text):
+        raw = m.group(1).strip().rstrip("*_")
+        # Remove markdown formatting and special chars
+        raw = re.sub(r"[`*_\[\]()]", "", raw)
+        # Strip trailing non-alpha (e.g. "AsyncAPI 3.0" → "AsyncAPI")
+        # Convert to PascalCase and add lowered version
+        pascal = _to_pascal(raw)
+        if pascal:
+            names.add(pascal.lower())
+        # Also add individual words from multi-word headings
+        for word in raw.split():
+            word = word.strip()
+            if len(word) >= 3 and word[0].isupper():
+                names.add(word.lower())
+    return names
+
+
 def _extract_entities(text: str) -> list[dict[str, Any]]:
     """Extract entity definitions from the PRD using multiple patterns.
 
-    Five extraction strategies are applied in order and their results are
-    merged (de-duplicated by normalised entity name).
+    First tries an authoritative structured entity table (highest confidence).
+    If found with 3+ entities, uses those exclusively.  Otherwise falls back
+    to five extraction strategies (unchanged from original).
     """
+    # Priority: authoritative structured entity table
+    authoritative = _extract_entities_from_authoritative_table(text)
+    if len(authoritative) >= 3:
+        return authoritative
+
+    # Fallback: original multi-strategy approach
     entities: dict[str, dict[str, Any]] = {}
 
     # Strategy 1 -- Markdown tables
@@ -966,9 +1125,18 @@ def _assign_entities_to_contexts(
     entities: list[dict[str, Any]],
     contexts: dict[str, dict[str, Any]],
 ) -> None:
-    """Best-effort assignment of entities to bounded contexts."""
+    """Best-effort assignment of entities to bounded contexts.
+
+    IMPORTANT: Does NOT overwrite an existing ``owning_context`` value.
+    If an entity was already assigned (e.g. from an authoritative table),
+    it keeps its original assignment.
+    """
     text_lower = text.lower()
     for entity in entities:
+        # Skip entities that already have an owning context set
+        if entity.get("owning_context"):
+            continue
+
         ename = entity["name"]
         ename_lower = ename.lower()
         assigned = False
@@ -1002,6 +1170,127 @@ def _assign_entities_to_contexts(
 # ---------------------------------------------------------------------------
 # Technology hints extraction
 # ---------------------------------------------------------------------------
+
+
+def _extract_explicit_services(text: str) -> list[dict[str, Any]]:
+    """Extract explicit service definitions from a Technology Stack table.
+
+    Looks for a table with header columns including "Component" (or "Service")
+    and "Technology" (or "Tech", "Stack").  Infrastructure rows (database,
+    message broker, API gateway, etc.) are filtered out.
+
+    Returns a list of dicts with keys: name, language, framework, is_frontend,
+    description.
+    """
+    services: list[dict[str, Any]] = []
+
+    # Find Technology Stack / Tech Stack section
+    section_pat = re.compile(
+        r"^##\s+(?:Technology\s+Stack|Tech\s+Stack|Stack)\s*\n"
+        r"((?:(?!^##\s).*\n)*)",
+        re.MULTILINE | re.IGNORECASE,
+    )
+
+    # Also try matching an inline table not under a specific heading
+    # by looking for tables with Component|Technology columns
+    table_pat = re.compile(
+        r"^(\|[^\n]*\|)\s*\n"
+        r"\|[-:\s|]+\|\s*\n"
+        r"((?:\|[^\n]+\n?)+)",
+        re.MULTILINE,
+    )
+
+    # Infrastructure component names to skip
+    _INFRA_NAMES = {
+        "database", "message broker", "api gateway", "cache",
+        "redis", "postgresql", "postgres", "traefik", "nginx",
+        "docker", "kubernetes", "monitoring", "logging",
+        "load balancer", "cdn", "storage", "queue",
+    }
+
+    def _parse_tech_string(tech: str) -> tuple[str, str]:
+        """Parse 'Python 3.12+ / FastAPI' → ('Python', 'FastAPI')."""
+        if not tech:
+            return ("", "")
+        parts = re.split(r"\s*/\s*|\s*,\s*", tech)
+        language = ""
+        framework = ""
+        for part in parts:
+            part = part.strip()
+            # Remove version numbers: "Python 3.12+" → "Python"
+            clean = re.sub(r"\s+[\d.+v]+.*$", "", part).strip()
+            if not clean:
+                continue
+            clean_lower = clean.lower()
+            lang_lower_set = {l.lower() for l in _LANGUAGES}
+            fw_lower_set = {f.lower() for f in _FRAMEWORKS}
+            if clean_lower in lang_lower_set or clean in _LANGUAGES:
+                language = clean
+            elif clean_lower in fw_lower_set or clean in _FRAMEWORKS:
+                framework = clean
+            elif clean_lower in {"angular", "react", "vue", "svelte"}:
+                # Frontend frameworks not in _FRAMEWORKS list
+                framework = clean
+            elif not language:
+                language = clean
+            elif not framework:
+                framework = clean
+        return (language, framework)
+
+    # Search within Technology Stack section first
+    search_text = text
+    for sec_match in section_pat.finditer(text):
+        search_text = sec_match.group(0)
+        break  # Use first section match
+
+    for t_match in table_pat.finditer(search_text):
+        header_line = t_match.group(1)
+        headers = [h.strip().lower() for h in header_line.strip().strip("|").split("|")]
+
+        # Need a component/service column and a technology column
+        comp_col = None
+        tech_col = None
+        rationale_col = None
+        for i, h in enumerate(headers):
+            if h in ("component", "service", "name", "module"):
+                comp_col = i
+            elif h in ("technology", "tech", "stack", "language / framework"):
+                tech_col = i
+            elif h in ("rationale", "description", "purpose", "notes"):
+                rationale_col = i
+
+        if comp_col is None or tech_col is None:
+            continue
+
+        rows_text = t_match.group(2).strip()
+        for row_line in rows_text.splitlines():
+            cols = [c.strip() for c in row_line.strip().strip("|").split("|")]
+            if len(cols) <= max(comp_col, tech_col):
+                continue
+
+            component = cols[comp_col].strip()
+            technology = cols[tech_col].strip()
+            rationale = cols[rationale_col].strip() if rationale_col is not None and len(cols) > rationale_col else ""
+
+            if not component or component.startswith("-"):
+                continue
+            if component.lower() in _INFRA_NAMES:
+                continue
+
+            language, framework = _parse_tech_string(technology)
+            is_frontend = framework.lower() in {
+                "angular", "react", "vue", "next.js", "nuxt", "svelte",
+            } if framework else False
+
+            services.append({
+                "name": component,
+                "language": language or "TypeScript" if is_frontend else language,
+                "framework": framework,
+                "is_frontend": is_frontend,
+                "description": rationale,
+            })
+
+    return services
 
 
 def _extract_technology_hints(text: str) -> dict[str, str | None]:
@@ -1497,15 +1786,22 @@ def _extract_events_from_sections(
       - ``## Domain Events``
       - ``### Event Bus``
     """
+    # Flexible section pattern — matches headings containing event keywords
+    # like "### Asynchronous (Events) — AsyncAPI 3.0" or "#### Events Published"
     section_pat = re.compile(
-        r"^#{2,4}\s+(?:Domain\s+)?(?:Events?|Event[- ]Driven\s+Communication|"
-        r"Event\s+Bus|Asynchronous\s+(?:Events?|Communication))\s*\n"
+        r"^#{2,4}\s+(?:Domain\s+)?(?:Events?\b|Event[- ]Driven\b|"
+        r"Event\s+Bus\b|Asynchronous\b)[^\n]*\n"
         r"((?:(?!^#{1,2}\s).*\n)*)",
         re.MULTILINE | re.IGNORECASE,
     )
-    # Table row: | event_name | publisher | subscriber | payload/description |
-    table_row_pat = re.compile(
-        r"^\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|",
+    # 4-column table: | Event | Publisher | Payload | Consumers |
+    table_row_4col_pat = re.compile(
+        r"^\|\s*([^|\n]+?)\s*\|\s*([^|\n]+?)\s*\|\s*([^|\n]+?)\s*\|\s*([^|\n]+?)\s*\|",
+        re.MULTILINE,
+    )
+    # 3-column table: | event_name | publisher | subscriber |
+    table_row_3col_pat = re.compile(
+        r"^\|\s*([^|\n]+?)\s*\|\s*([^|\n]+?)\s*\|\s*([^|\n]+?)\s*\|",
         re.MULTILINE,
     )
     # Bullet event: "- invoice.posted: published by Invoicing, consumed by Accounts"
@@ -1517,25 +1813,67 @@ def _extract_events_from_sections(
     for sec_match in section_pat.finditer(text):
         body = sec_match.group(1)
 
-        # Try table rows first
-        for row_match in table_row_pat.finditer(body):
+        # Try 4-column table first (Event | Publisher | Payload | Consumers)
+        found_4col = False
+        for row_match in table_row_4col_pat.finditer(body):
             name_raw = row_match.group(1).strip().strip("`")
             # Skip header/separator rows
-            if name_raw.startswith("-") or name_raw.lower() in ("event", "name", "event name"):
+            if name_raw.startswith("-") or name_raw.lower() in (
+                "event", "name", "event name",
+            ):
                 continue
             pub = row_match.group(2).strip()
-            sub = row_match.group(3).strip()
+            if pub.lower() in ("publisher", "source", "service"):
+                continue
+
+            payload_raw = row_match.group(3).strip()
+            consumers_raw = row_match.group(4).strip()
 
             event_name = _normalize_event_name(name_raw)
             if event_name and event_name not in seen:
                 seen.add(event_name)
+                # Parse payload fields from { field1, field2 } format
+                payload_fields = _parse_payload_fields(payload_raw)
+                # Parse consumers from comma-separated list
+                consumers = [
+                    s.strip() for s in re.split(r"[,;&]", consumers_raw)
+                    if s.strip()
+                ]
                 events.append({
                     "name": event_name,
                     "publisher_service": pub,
-                    "subscriber_services": [s.strip() for s in re.split(r"[,;&]", sub) if s.strip()],
-                    "payload_fields": _infer_event_payload(event_name),
+                    "subscriber_services": consumers,
+                    "payload_fields": payload_fields,
                     "channel": event_name,
                 })
+                found_4col = True
+
+        # Fall back to 3-column table if no 4-column rows found
+        if not found_4col:
+            for row_match in table_row_3col_pat.finditer(body):
+                name_raw = row_match.group(1).strip().strip("`")
+                if name_raw.startswith("-") or name_raw.lower() in (
+                    "event", "name", "event name",
+                ):
+                    continue
+                pub = row_match.group(2).strip()
+                if pub.lower() in ("publisher", "source", "service"):
+                    continue
+                sub = row_match.group(3).strip()
+
+                event_name = _normalize_event_name(name_raw)
+                if event_name and event_name not in seen:
+                    seen.add(event_name)
+                    events.append({
+                        "name": event_name,
+                        "publisher_service": pub,
+                        "subscriber_services": [
+                            s.strip() for s in re.split(r"[,;&]", sub)
+                            if s.strip()
+                        ],
+                        "payload_fields": _infer_event_payload(event_name),
+                        "channel": event_name,
+                    })
 
         # Try bullet events
         for bullet_match in bullet_event_pat.finditer(body):
@@ -1686,6 +2024,20 @@ def _extract_events_from_state_machines(
                     "payload_fields": _infer_event_payload(event_name, sm_entity),
                     "channel": event_name,
                 })
+
+
+def _parse_payload_fields(payload_raw: str) -> list[str]:
+    """Parse payload fields from a string like ``{ user_id, email, tenant_id }``."""
+    # Remove braces
+    cleaned = re.sub(r"[{}]", "", payload_raw).strip()
+    if not cleaned:
+        return []
+    fields: list[str] = []
+    for part in cleaned.split(","):
+        part = part.strip().rstrip("[]")
+        if part:
+            fields.append(part)
+    return fields
 
 
 def _normalize_event_name(raw: str) -> str:
@@ -2121,6 +2473,59 @@ def _normalise_type(raw: str) -> str:
         key = base.group(1).lower()
         return _TYPE_ALIASES.get(key, raw.strip())
     return raw.strip()
+
+
+def _infer_field_type(field_name: str) -> str:
+    """Infer a field type from its name using naming conventions.
+
+    Returns a normalised type string consistent with ``_TYPE_ALIASES`` output.
+    Used when the PRD table does not provide explicit type information.
+    """
+    name_lower = field_name.lower()
+
+    # Boolean fields
+    if name_lower.startswith(("is_", "has_")):
+        return "bool"
+
+    # ID / foreign key fields
+    if name_lower == "id" or name_lower.endswith("_id"):
+        return "UUID"
+
+    # Numeric — decimal / money
+    if any(kw in name_lower for kw in (
+        "amount", "total", "balance", "price", "rate", "quantity",
+        "credit", "debit",
+    )):
+        return "float"
+
+    # Numeric — integer
+    if name_lower in (
+        "line_number", "sequence", "order", "position", "retry_count", "count",
+    ) or name_lower.endswith("_count"):
+        return "int"
+
+    # Date / time fields
+    if any(name_lower.endswith(sfx) for sfx in ("_at", "_date", "_time")):
+        return "datetime"
+    if name_lower in (
+        "created", "updated", "deleted", "expires", "timestamp",
+        "period_start", "period_end", "due_date", "issue_date",
+    ):
+        return "datetime"
+
+    # Enum-like fields
+    if name_lower in (
+        "status", "type", "sub_type", "category", "priority", "severity",
+        "channel", "normal_balance", "state", "phase", "role",
+    ):
+        return "str"
+
+    # Email
+    if "email" in name_lower:
+        return "str"
+
+    # Default
+    return "str"
 
 
 def _parse_required(value: str, header: str) -> bool:

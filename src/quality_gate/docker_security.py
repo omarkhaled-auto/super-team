@@ -299,8 +299,8 @@ class DockerSecurityScanner:
                     message=(
                         "Dockerfile is missing a HEALTHCHECK instruction. "
                         "Suggestion: Add a HEALTHCHECK instruction, e.g. "
-                        "'HEALTHCHECK --interval=30s --timeout=3s "
-                        "CMD curl -f http://localhost/ || exit 1'."
+                        "'HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=5 "
+                        "CMD wget -qO- http://127.0.0.1:8080/health || exit 1'."
                     ),
                 )
             )

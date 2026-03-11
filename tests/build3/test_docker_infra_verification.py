@@ -882,16 +882,18 @@ class TestHealthCheckLifecycle:
         hc = data["services"]["redis"]["healthcheck"]
         assert hc["test"] == ["CMD", "redis-cli", "ping"]
 
-    def test_app_service_healthcheck_uses_curl(self, gen: ComposeGenerator) -> None:
-        """App service healthcheck must use curl to the health endpoint."""
+    def test_app_service_healthcheck_uses_stack_tool(self, gen: ComposeGenerator) -> None:
+        """App service healthcheck uses stack-appropriate tool (not curl)."""
         svc = ServiceInfo(
             service_id="api", domain="api", port=3000, health_endpoint="/api/health",
         )
         data = _generate_yaml_dict(gen, [svc])
         hc = data["services"]["api"]["healthcheck"]
         test_cmd = hc["test"][-1]
-        assert "curl -f" in test_cmd
-        assert "http://localhost:3000/api/health" in test_cmd
+        # Python stack uses urllib, NestJS uses node, frontend uses wget
+        assert "urllib" in test_cmd or "node -e" in test_cmd or "wget" in test_cmd
+        assert "127.0.0.1" in test_cmd  # Never localhost (IPv6 fix)
+        assert "/api/health" in test_cmd
 
     def test_all_services_have_healthchecks(self, gen: ComposeGenerator) -> None:
         """Every service in the compose output must have a healthcheck."""

@@ -693,7 +693,8 @@ class TestFixLoopBuilderSubprocess:
         positional_args = call_args[0]
         assert positional_args[0] == sys.executable
         assert "-m" in positional_args
-        assert "agent_team" in positional_args
+        # Prefers agent_team_v15 when available, falls back to agent_team
+        assert "agent_team" in positional_args or "agent_team_v15" in positional_args
         assert "--depth" in positional_args
         assert "quick" in positional_args
         assert "--cwd" in positional_args

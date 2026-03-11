@@ -205,11 +205,18 @@ class TestFeedViolationsToBuilder:
         call_args = mock_exec.call_args
         assert call_args[0][0] == sys.executable
         assert call_args[0][1] == "-m"
-        assert call_args[0][2] == "agent_team"
+        # Prefers agent_team_v15 when available, falls back to agent_team
+        assert call_args[0][2] in ("agent_team", "agent_team_v15")
         assert "--cwd" in call_args[0]
         assert str(builder_dir) in call_args[0]
-        assert call_args[1]["stdout"] == asyncio.subprocess.PIPE
-        assert call_args[1]["stderr"] == asyncio.subprocess.PIPE
+        # stdout/stderr are redirected to log files (not PIPE) to avoid
+        # Windows pipe deadlock when the 4KB buffer fills without reading.
+        assert call_args[1]["stdout"] != asyncio.subprocess.PIPE, (
+            "stdout should be a log file handle, not PIPE (pipe deadlock fix)"
+        )
+        assert call_args[1]["stderr"] != asyncio.subprocess.PIPE, (
+            "stderr should be a log file handle, not PIPE (pipe deadlock fix)"
+        )
 
     @pytest.mark.asyncio
     async def test_feed_violations_extracts_cost(

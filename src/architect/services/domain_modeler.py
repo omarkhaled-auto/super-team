@@ -207,6 +207,21 @@ def _detect_state_machine(
             break
 
     if state_field is not None:
+        # Skip boolean flag fields — they don't represent state machines
+        if state_field.name.lower().startswith(("is_", "has_")):
+            return None
+
+        # If the PRD defines explicit state machines for specific entities,
+        # only create default SMs for those entities (avoids spurious SMs
+        # for entities like Notification that have a "status" field).
+        parsed_sm_entities: set[str] = {
+            sm.get("entity", "").lower()
+            for sm in parsed.state_machines
+            if sm.get("entity")
+        }
+        if parsed_sm_entities and entity_name.lower() not in parsed_sm_entities:
+            return None
+
         # Has a state field but no explicit state machine data
         return _default_state_machine()
 

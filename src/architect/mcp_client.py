@@ -64,12 +64,24 @@ async def call_architect_mcp(prd_text: str, config: object | None = None) -> dic
 
     Args:
         prd_text: The full PRD text to decompose.
-        config: Optional configuration (unused, for forward compat).
+        config: Optional ArchitectConfig; if provided, decomposition_strategy,
+            max_services, and min_entities_per_service are forwarded.
 
     Returns:
         Dict with service_map, domain_model, contract_stubs, etc.
     """
-    return await _call_tool("decompose", {"prd_text": prd_text})
+    params: dict[str, Any] = {"prd_text": prd_text}
+    if config is not None:
+        strategy = getattr(config, "decomposition_strategy", None)
+        if strategy and strategy != "microservices":
+            params["decomposition_strategy"] = strategy
+        max_svc = getattr(config, "max_services", None)
+        if max_svc is not None:
+            params["max_services"] = max_svc
+        min_ent = getattr(config, "min_entities_per_service", None)
+        if min_ent is not None:
+            params["min_entities_per_service"] = min_ent
+    return await _call_tool("decompose", params)
 
 
 # ---------------------------------------------------------------------------
@@ -122,13 +134,30 @@ class ArchitectClient:
         logger.error("ArchitectClient.%s failed after %d retries: %s", tool_name, _MAX_RETRIES, last_err)
         return _default
 
-    async def decompose(self, prd_text: str) -> dict[str, Any] | None:
+    async def decompose(
+        self,
+        prd_text: str,
+        decomposition_strategy: str = "microservices",
+        max_services: int = 5,
+        min_entities_per_service: int = 6,
+    ) -> dict[str, Any] | None:
         """SVC-001: Decompose a PRD into services, domain model, and contracts.
+
+        Args:
+            prd_text: The full PRD text to decompose.
+            decomposition_strategy: "microservices", "bounded_contexts", or "monolith".
+            max_services: Max backend service count (bounded_contexts only).
+            min_entities_per_service: Min entities per service (bounded_contexts only).
 
         Returns:
             DecompositionResult dict, or None on failure.
         """
-        result = await self._call("decompose", {"prd_text": prd_text}, default=None)
+        params: dict[str, Any] = {"prd_text": prd_text}
+        if decomposition_strategy != "microservices":
+            params["decomposition_strategy"] = decomposition_strategy
+        params["max_services"] = max_services
+        params["min_entities_per_service"] = min_entities_per_service
+        result = await self._call("decompose", params, default=None)
         return result
 
     async def get_service_map(self, project_name: str | None = None) -> dict[str, Any]:

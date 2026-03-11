@@ -1,0 +1,35 @@
++---- Pipeline Overview ----+
+| Super Orchestrator v3.0.0 |
+| Pipeline: unknown         |
+| PRD: unknown              |
+|                           |
++---------------------------+
+
+============================================================
+  PIPELINE LOOP #1  state=builders_running  
+============================================================
+  -> Calling handler: _phase_builders_complete
+  [phase-builders-complete] Starting parallel builders
+  [builders] Starting parallel builders
+Builder frontend claims success but produced no source files (error_context=(none)) -- marking as failed
+Failed to start services: time="2026-02-24T14:24:10+04:00" level=warning msg="C:\\MY_PROJECTS\\super-team\\.super-orchestrator\\docker-compose.infra.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
+time="2026-02-24T14:24:10+04:00" level=warning msg="C:\\MY_PROJECTS\\super-team\\.super-orchestrator\\docker-compose.build1.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
+time="2026-02-24T14:24:10+04:00" level=warning msg="C:\\MY_PROJECTS\\super-team\\.super-orchestrator\\docker-compose.traefik.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
+time="2026-02-24T14:24:10+04:00" level=warning msg="C:\\MY_PROJECTS\\super-team\\.super-orchestrator\\docker-compose.generated.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
+time="2026-02-24T14:24:10+04:00" level=warning msg="C:\\MY_PROJECTS\\super-team\\.super-orchestrator\\docker-compose.run4.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
+unable to get image 'super-team-run4-auth-service': error during connect: Get "http://%2F%2F.%2Fpipe%2FdockerDesktopLinuxEngine/v1.51/images/super-team-run4-auth-service/json": open //./pipe/dockerDesktopLinuxEngine: The system cannot find the file specified.
+
+Integration phase error: Failed to start services: docker compose up returned no running services
+Quality gate: Layer 2 verdict is skipped -- skipping layers 3, 4
+Builder state not found: .super-orchestrator\unknown\.agent-team\STATE.json
+Builder frontend claims success but produced no source files (error_context=(none)) -- marking as failed
+Failed to start services: time="2026-02-24T14:26:04+04:00" level=warning msg="C:\\MY_PROJECTS\\super-team\\.super-orchestrator\\docker-compose.infra.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
+time="2026-02-24T14:26:04+04:00" level=warning msg="C:\\MY_PROJECTS\\super-team\\.super-orchestrator\\docker-compose.build1.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
+time="2026-02-24T14:26:04+04:00" level=warning msg="C:\\MY_PROJECTS\\super-team\\.super-orchestrator\\docker-compose.traefik.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
+time="2026-02-24T14:26:04+04:00" level=warning msg="C:\\MY_PROJECTS\\super-team\\.super-orchestrator\\docker-compose.generated.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
+time="2026-02-24T14:26:04+04:00" level=warning msg="C:\\MY_PROJECTS\\super-team\\.super-orchestrator\\docker-compose.run4.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
+unable to get image 'super-team-run4-invoicing-service': error during connect: Get "http://%2F%2F.%2Fpipe%2FdockerDesktopLinuxEngine/v1.51/images/super-team-run4-invoicing-service/json": open //./pipe/dockerDesktopLinuxEngine: The system cannot find the file specified.
+
+Integration phase error: Failed to start services: docker compose up returned no running services
+Quality gate: Layer 2 verdict is skipped -- skipping layers 3, 4
+Builder state not found: .super-orchestrator\unknown\.agent-team\STATE.json

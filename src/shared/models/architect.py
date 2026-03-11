@@ -40,6 +40,7 @@ class ServiceDefinition(BaseModel):
     owns_entities: list[str] = Field(default_factory=list)
     provides_contracts: list[str] = Field(default_factory=list)
     consumes_contracts: list[str] = Field(default_factory=list)
+    is_frontend: bool = False
 
     model_config = {"from_attributes": True}
 

@@ -194,11 +194,14 @@ class TestAsyncMachineConfiguration:
         assert "complete" not in source, "'complete' should not be in fail's source"
         assert "failed" not in source, "'failed' should not be in fail's source"
 
-    def test_all_transitions_have_conditions_except_fail(self) -> None:
-        """Every non-fail transition has a conditions list."""
+    def test_all_transitions_have_conditions_except_unconditional(self) -> None:
+        """Every transition has conditions except intentionally unconditional ones."""
+        # 'fail' — unconditional from any state
+        # 'skip_to_complete' — conditions removed to prevent quality_gate infinite loop;
+        #   the handler itself validates before triggering (see state_machine.py comment).
+        unconditional_triggers = {"fail", "skip_to_complete"}
         for t in TRANSITIONS:
-            if t["trigger"] == "fail":
-                # fail has no conditions (unconditional)
+            if t["trigger"] in unconditional_triggers:
                 continue
             assert "conditions" in t, (
                 f"Transition '{t['trigger']}' should have conditions"

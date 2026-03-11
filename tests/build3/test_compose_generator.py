@@ -93,8 +93,11 @@ class TestComposeGenerator:
         with open(output, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
         hc = data["services"]["auth-service"]["healthcheck"]
-        assert "curl" in hc["test"][-1]
+        # Python stack uses urllib (not curl — python:3.12-slim has no curl)
+        assert "urllib" in hc["test"][-1] or "wget" in hc["test"][-1]
         assert "/api/health" in hc["test"][-1]
+        # All health checks must use 127.0.0.1, never localhost (IPv6 issue)
+        assert "127.0.0.1" in hc["test"][-1]
 
     def test_postgres_healthcheck(self, generator, sample_services, tmp_path) -> None:
         output = tmp_path / "docker-compose.yml"

@@ -14,10 +14,10 @@ architect:
 builder:
   # Maximum concurrent builder processes
   max_concurrent: 3
-  # Timeout per builder in seconds
-  timeout_per_builder: 1800
-  # Build depth: "quick", "standard", or "thorough"
-  depth: "thorough"
+  # Timeout per builder in seconds  # 5 hours
+  timeout_per_builder: 18000
+  # Build depth: "quick", "standard", "thorough", or "exhaustive"
+  depth: "exhaustive"
 
 # Integration testing configuration
 integration:

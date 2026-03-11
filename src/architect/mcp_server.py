@@ -59,12 +59,17 @@ mcp = FastMCP("Architect")
 
 
 @mcp.tool(name="decompose")
-def decompose_prd(prd_text: str) -> dict[str, Any]:
+def decompose_prd(
+    prd_text: str,
+    decomposition_strategy: str = "microservices",
+    max_services: int = 5,
+    min_entities_per_service: int = 6,
+) -> dict[str, Any]:
     """Decompose a Product Requirements Document into services, domain model, and contracts.
 
     Runs the full Architect decomposition pipeline:
       1. Parse the PRD text into structured data.
-      2. Identify service boundaries using aggregate-root analysis.
+      2. Identify service boundaries using the chosen decomposition strategy.
       3. Build a service map with technology stack hints.
       4. Build a domain model with entities, relationships, and state machines.
       5. Validate the decomposition for structural issues.
@@ -73,6 +78,10 @@ def decompose_prd(prd_text: str) -> dict[str, Any]:
 
     Args:
         prd_text: The full text of the PRD document (Markdown or plain text).
+        decomposition_strategy: One of "microservices" (default), "bounded_contexts",
+            or "monolith".
+        max_services: Maximum backend service count (bounded_contexts mode only).
+        min_entities_per_service: Minimum entities per service (bounded_contexts mode only).
 
     Returns:
         A dictionary containing:
@@ -87,7 +96,12 @@ def decompose_prd(prd_text: str) -> dict[str, Any]:
         parsed = parse_prd(prd_text)
 
         # Step 2: Identify service boundaries
-        boundaries = identify_boundaries(parsed)
+        boundaries = identify_boundaries(
+            parsed,
+            decomposition_strategy=decomposition_strategy,
+            max_services=max_services,
+            min_entities_per_service=min_entities_per_service,
+        )
 
         # Step 3: Build service map with real PRD hash
         prd_hash = hashlib.sha256(prd_text.encode("utf-8")).hexdigest()

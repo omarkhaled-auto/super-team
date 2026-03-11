@@ -32,8 +32,8 @@ class TestConfigDefaults:
     def test_builder_defaults(self) -> None:
         cfg = BuilderConfig()
         assert cfg.max_concurrent == 3
-        assert cfg.timeout_per_builder == 1800
-        assert cfg.depth == "thorough"
+        assert cfg.timeout_per_builder == 18000
+        assert cfg.depth == "exhaustive"
 
     def test_integration_defaults(self) -> None:
         cfg = IntegrationConfig()

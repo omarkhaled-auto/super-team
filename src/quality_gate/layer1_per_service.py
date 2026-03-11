@@ -92,6 +92,7 @@ class Layer1Scanner:
                         ),
                         file_path="",
                         line=0,
+                        service=br.service_id,
                     )
                 )
 
@@ -107,6 +108,7 @@ class Layer1Scanner:
                     ),
                     file_path="",
                     line=0,
+                    service="pipeline-level",
                 )
             )
 

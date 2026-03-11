@@ -252,8 +252,9 @@ class ComposeGenerator:
     def _detect_stack(service_info: "ServiceInfo | None") -> str:
         """Detect the technology stack category for a service.
 
-        Returns one of: ``"python"``, ``"typescript"``, ``"frontend"``.
-        Defaults to ``"python"`` when the stack cannot be determined.
+        Returns one of: ``"python"``, ``"typescript"``, ``"frontend"``,
+        ``"dotnet"``.  Defaults to ``"python"`` when the stack cannot be
+        determined.
         """
         if service_info is None:
             return "python"
@@ -275,6 +276,12 @@ class ComposeGenerator:
             "nestjs", "nest", "express", "koa", "hapi", "fastify",
         ):
             return "typescript"
+
+        # C# / .NET detection
+        if language in ("csharp", "c#", "cs") or framework in (
+            "asp.net", "asp.net core", ".net", "dotnet", "entity framework",
+        ):
+            return "dotnet"
 
         return "python"
 
@@ -325,6 +332,12 @@ class ComposeGenerator:
                 ".on('error', () => process.exit(1))"
                 '"'
             )
+        elif stack in ("dotnet", "csharp", "aspnet"):
+            # .NET runtime images are Debian-based, wget available
+            cmd = (
+                f"wget -qO- http://127.0.0.1:{internal_port}"
+                f"{health_endpoint} || exit 1"
+            )
         else:
             # Fallback — wget is widely available
             cmd = (
@@ -336,8 +349,8 @@ class ComposeGenerator:
             "test": ["CMD-SHELL", cmd],
             "interval": "15s",
             "timeout": "5s",
-            "retries": 3,
-            "start_period": "30s",
+            "retries": 5,
+            "start_period": "90s",
         }
 
     @staticmethod
@@ -371,6 +384,21 @@ class ComposeGenerator:
                 "LOG_LEVEL": "info",
             }
 
+        if stack in ("dotnet", "csharp", "aspnet"):
+            return {
+                "SERVICE_ID": service_id,
+                "ASPNETCORE_ENVIRONMENT": "Production",
+                "ASPNETCORE_URLS": "http://+:8080",
+                "ConnectionStrings__DefaultConnection": (
+                    f"Host=postgres;Port=5432;"
+                    f"Database={db_name};Username=app;"
+                    f"Password=app"
+                ),
+                "Redis__ConnectionString": "redis:6379",
+                "JWT_SECRET": "${JWT_SECRET:-super-secret-change-in-production}",
+                "Serilog__MinimumLevel__Default": "Information",
+            }
+
         # typescript / nestjs / node / express
         return {
             "SERVICE_ID": service_id,
@@ -400,6 +428,11 @@ class ComposeGenerator:
         pick the right probe tool for each base image.
         """
         stack = ComposeGenerator._detect_stack(service_info)
+        # Use the service's configured health endpoint (e.g. /api/{service_id}/health)
+        # so Dockerfile HEALTHCHECK aligns with builder instructions and compose healthcheck.
+        health_path = "/health"
+        if service_info is not None and service_info.health_endpoint:
+            health_path = service_info.health_endpoint
 
         if stack == "frontend":
             # Multi-stage: node build -> nginx:stable-alpine
@@ -436,7 +469,7 @@ class ComposeGenerator:
                 "try_files $uri $uri/ /index.html;\\n  }\\n"
                 "}\\n' > /etc/nginx/conf.d/default.conf\n"
                 "EXPOSE 80\n"
-                "HEALTHCHECK --interval=15s --timeout=5s --retries=3 \\\n"
+                "HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=5 \\\n"
                 "  CMD wget -qO- http://127.0.0.1:80/ || exit 1\n"
                 'CMD ["nginx", "-g", "daemon off;"]\n'
             )
@@ -457,12 +490,48 @@ class ComposeGenerator:
                 "RUN npm ci --omit=dev\n"
                 "COPY --from=build /app/dist ./dist\n"
                 f"EXPOSE {port}\n"
-                "HEALTHCHECK --interval=15s --timeout=5s --retries=3 \\\n"
+                "HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=5 \\\n"
                 f'  CMD node -e "const http = require(\'http\'); '
-                f"http.get('http://127.0.0.1:{port}/health', "
+                f"http.get('http://127.0.0.1:{port}{health_path}', "
                 "r => process.exit(r.statusCode === 200 ? 0 : 1))"
                 '.on(\'error\', () => process.exit(1))"\n'
                 'CMD ["node", "dist/main.js"]\n'
+            )
+
+        if stack == "dotnet":
+            # Multi-stage: dotnet/sdk:8.0 build -> dotnet/aspnet:8.0 runtime
+            return (
+                "# .NET 8 Multi-Stage Build\n"
+                "FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build\n"
+                "WORKDIR /src\n"
+                "\n"
+                "# Copy solution and project files first (layer caching)\n"
+                "COPY *.sln ./\n"
+                "COPY */*.csproj ./\n"
+                "RUN for file in $(ls *.csproj); do \\\n"
+                '        dir=$(basename "$file" .csproj); \\\n'
+                '        mkdir -p "$dir" && mv "$file" "$dir/"; \\\n'
+                "    done\n"
+                "RUN dotnet restore\n"
+                "\n"
+                "# Copy everything else and build\n"
+                "COPY . .\n"
+                "RUN dotnet publish -c Release -o /app/publish --no-restore\n"
+                "\n"
+                "# Runtime stage\n"
+                "FROM mcr.microsoft.com/dotnet/aspnet:8.0\n"
+                "WORKDIR /app\n"
+                "COPY --from=build /app/publish .\n"
+                "\n"
+                "# Create non-root user\n"
+                'RUN adduser --disabled-password --gecos "" appuser && chown -R appuser /app\n'
+                "USER appuser\n"
+                "\n"
+                "ENV ASPNETCORE_URLS=http://+:8080\n"
+                f"EXPOSE {port}\n"
+                f"HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=5 \\\n"
+                f"  CMD wget -qO- http://127.0.0.1:{port}{health_path} || exit 1\n"
+                'ENTRYPOINT ["dotnet", "App.dll"]\n'
             )
 
         # Default: Python / FastAPI
@@ -477,10 +546,10 @@ class ComposeGenerator:
             "RUN pip install --no-cache-dir -r requirements.txt\n"
             "COPY . .\n"
             f"EXPOSE {port}\n"
-            "HEALTHCHECK --interval=15s --timeout=5s --retries=3 \\\n"
+            "HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=5 \\\n"
             f'  CMD python -c "import urllib.request; '
             f"urllib.request.urlopen("
-            f"'http://127.0.0.1:{port}/health')\"\n"
+            f"'http://127.0.0.1:{port}{health_path}')\"\n"
             f'CMD ["python", "-m", "uvicorn", "main:app",'
             f' "--host", "0.0.0.0", "--port", "{port}"]\n'
         )
@@ -536,10 +605,10 @@ class ComposeGenerator:
             "labels": labels,
             "healthcheck": healthcheck,
             "environment": env,
-            "mem_limit": "384m",
+            "mem_limit": "768m",
             "deploy": {
                 "resources": {
-                    "limits": {"memory": "384m"},
+                    "limits": {"memory": "768m"},
                 },
             },
         }

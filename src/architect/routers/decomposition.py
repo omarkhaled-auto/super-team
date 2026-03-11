@@ -31,6 +31,9 @@ def _run_decomposition(
     prd_text: str,
     service_map_store: ServiceMapStore,
     domain_model_store: DomainModelStore,
+    decomposition_strategy: str = "microservices",
+    max_services: int = 5,
+    min_entities_per_service: int = 6,
 ) -> DecompositionResult:
     """Run the full decomposition pipeline synchronously.
 
@@ -40,7 +43,12 @@ def _run_decomposition(
     parsed = parse_prd(prd_text)
 
     # Step 2: Identify service boundaries
-    boundaries = identify_boundaries(parsed)
+    boundaries = identify_boundaries(
+        parsed,
+        decomposition_strategy=decomposition_strategy,
+        max_services=max_services,
+        min_entities_per_service=min_entities_per_service,
+    )
 
     # Step 3: Build service map
     prd_hash = hashlib.sha256(prd_text.encode("utf-8")).hexdigest()

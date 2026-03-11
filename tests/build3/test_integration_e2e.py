@@ -200,6 +200,7 @@ def _sample_quality_report_failed_with_violations() -> QualityGateReport:
             category="security",
             file_path="auth-service/main.py",
             line=42,
+            service="auth-service",
             message="Missing JWT validation",
         ),
         ScanViolation(
@@ -208,6 +209,7 @@ def _sample_quality_report_failed_with_violations() -> QualityGateReport:
             category="observability",
             file_path="order-service/main.py",
             line=10,
+            service="order-service",
             message="Missing structured logging",
         ),
     ]

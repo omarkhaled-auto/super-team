@@ -21,7 +21,7 @@ class PipelineState:
     pipeline_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     prd_path: str = ""
     config_path: str = ""
-    depth: str = "thorough"
+    depth: str = "exhaustive"
     current_state: str = "init"
     previous_state: str = ""
     completed_phases: list[str] = field(default_factory=list)

@@ -1,16 +1,26 @@
 {
-  "pipeline_id": "e817c881-a472-4e89-b0cd-2d12c850ac66",
-  "prd_path": "C:\\Users\\omars\\AppData\\Local\\Temp\\pytest-of-omars\\pytest-313\\test_new_pipeline_creates_stat0\\prd.md",
+  "pipeline_id": "e5647cc3-896a-4351-9da1-5cfc199181bc",
+  "prd_path": "",
   "config_path": "",
-  "depth": "thorough",
+  "depth": "exhaustive",
   "current_state": "init",
   "previous_state": "",
-  "completed_phases": [],
-  "phase_artifacts": {},
+  "completed_phases": [
+    "contract_registration"
+  ],
+  "phase_artifacts": {
+    "contract_registration": {
+      "registered_contracts": 1,
+      "registry_path": "C:\\Users\\omars\\AppData\\Local\\Temp\\tmpdoxbrio4\\contracts",
+      "generated_test_files": [],
+      "test_services": [],
+      "pact_files": []
+    }
+  },
   "architect_retries": 0,
   "max_architect_retries": 2,
-  "service_map_path": "",
-  "contract_registry_path": "",
+  "service_map_path": "C:\\Users\\omars\\AppData\\Local\\Temp\\tmpdoxbrio4\\service_map.json",
+  "contract_registry_path": "C:\\Users\\omars\\AppData\\Local\\Temp\\tmpdoxbrio4\\contracts",
   "domain_model_path": "",
   "builder_statuses": {},
   "builder_costs": {},
@@ -24,10 +34,12 @@
   "last_quality_results": {},
   "quality_report_path": "",
   "total_cost": 0.0,
-  "phase_costs": {},
+  "phase_costs": {
+    "contract_registration": 0.0
+  },
   "budget_limit": null,
-  "started_at": "2026-02-23T11:14:31.769611+00:00",
-  "updated_at": "2026-02-23T11:14:31.770611+00:00",
+  "started_at": "2026-03-11T20:02:49.118116+00:00",
+  "updated_at": "2026-03-11T20:02:49.119671+00:00",
   "interrupted": false,
   "interrupt_reason": "",
   "schema_version": 1

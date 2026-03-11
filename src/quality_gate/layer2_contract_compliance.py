@@ -49,6 +49,31 @@ class Layer2Scanner:
         start = time.monotonic()
         violations: list[ScanViolation] = []
 
+        # ---- Check if integration explicitly failed ----
+        if integration_report.overall_health in ("failed", "error"):
+            violations.append(
+                ScanViolation(
+                    code="L2-INTEGRATION-FAIL",
+                    severity="error",
+                    category="layer2",
+                    message=(
+                        f"Docker integration failed: {integration_report.overall_health}. "
+                        f"Services deployed: {integration_report.services_deployed}, "
+                        f"healthy: {integration_report.services_healthy}."
+                    ),
+                    service="pipeline-level",
+                )
+            )
+            duration = time.monotonic() - start
+            return LayerResult(
+                layer=QualityLevel.LAYER2_CONTRACT,
+                verdict=GateVerdict.FAILED,
+                violations=violations,
+                total_checks=1,
+                passed_checks=0,
+                duration_seconds=duration,
+            )
+
         # ---- Convert ContractViolations to ScanViolations ----
         for cv in integration_report.violations:
             violations.append(

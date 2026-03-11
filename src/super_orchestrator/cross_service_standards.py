@@ -101,6 +101,27 @@ def create_access_token(user_id: str, tenant_id: str, role: str, email: str) -> 
     return jwt.encode(payload, os.environ["JWT_SECRET"], algorithm="HS256")
 ```
 
+**C# / ASP.NET Core JWT validation:**
+```csharp
+// In Program.cs:
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options => {
+        options.TokenValidationParameters = new TokenValidationParameters {
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(
+                Encoding.UTF8.GetBytes(builder.Configuration["JWT_SECRET"])),
+            ValidateIssuer = false,
+            ValidateAudience = false,
+            ClockSkew = TimeSpan.Zero,
+        };
+    });
+
+// Reading claims in a controller:
+var userId = User.FindFirstValue("sub");           // NOT "user_id"
+var tenantId = User.FindFirstValue("tenant_id");   // snake_case
+var role = User.FindFirstValue("role");
+```
+
 **CRITICAL RULES:**
 1. Every service MUST read JWT_SECRET from environment (NOT JWT_SECRET_KEY, NOT JWT_PRIVATE_KEY)
 2. Every service MUST use HS256 algorithm (NOT RS256)
@@ -316,6 +337,36 @@ private async handleEvent(eventType: string, payload: any, tenantId: string): Pr
     }
 }
 ```
+
+### C# Event Publishing
+```csharp
+// Publishing via StackExchange.Redis
+await _redis.GetSubscriber().PublishAsync(
+    "procurement.order.approved",
+    JsonSerializer.Serialize(new {
+        event_type = "procurement.order.approved",
+        timestamp = DateTime.UtcNow,
+        source = "procurement-service",
+        tenant_id = tenantId,
+        payload = new { order_id = orderId, approved_by = userId }
+    })
+);
+```
+
+### C# Event Subscribing
+```csharp
+// Subscribing via StackExchange.Redis
+var subscriber = _redis.GetSubscriber();
+await subscriber.SubscribeAsync("procurement.order.approved", async (channel, message) => {
+    try {
+        var data = JsonSerializer.Deserialize<EventEnvelope>(message!);
+        await ProcessOrderApproval(data.Payload, data.TenantId);
+    } catch (Exception ex) {
+        _logger.LogError(ex, "Failed to handle {Channel}", channel);
+        // Do NOT re-throw — continue processing other events
+    }
+});
+```
 """
 
 
@@ -468,8 +519,8 @@ COPY --from=builder /app .
 RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser
 USER appuser
 EXPOSE 8080
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \\
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/{service-name}/health')" || exit 1
+HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=5 \\
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/{service-name}/health')" || exit 1
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
 ```
 
@@ -490,8 +541,8 @@ COPY --from=builder /app/package*.json ./
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 USER appuser
 EXPOSE 8080
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \\
-  CMD wget --no-verbose --tries=1 --spider http://localhost:8080/api/{service-name}/health || exit 1
+HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=5 \\
+  CMD wget -qO- http://127.0.0.1:8080/api/{service-name}/health || exit 1
 CMD ["node", "dist/main"]
 ```
 
@@ -580,6 +631,24 @@ const VALID_TRANSITIONS: Record<string, string[]> = {
 function validateTransition(current: string, target: string): boolean {
     return (VALID_TRANSITIONS[current] || []).includes(target);
 }
+```
+
+### C# Pattern:
+```csharp
+public enum OrderStatus { Draft, Submitted, Approved, Rejected, Completed, Cancelled }
+
+private static readonly Dictionary<OrderStatus, HashSet<OrderStatus>> ValidTransitions = new()
+{
+    [OrderStatus.Draft] = new() { OrderStatus.Submitted, OrderStatus.Cancelled },
+    [OrderStatus.Submitted] = new() { OrderStatus.Approved, OrderStatus.Rejected },
+    [OrderStatus.Approved] = new() { OrderStatus.Completed },
+    [OrderStatus.Rejected] = new() { OrderStatus.Draft },
+    [OrderStatus.Completed] = new(),   // terminal
+    [OrderStatus.Cancelled] = new(),   // terminal
+};
+
+public static bool ValidateTransition(OrderStatus current, OrderStatus target)
+    => ValidTransitions.TryGetValue(current, out var allowed) && allowed.Contains(target);
 ```
 """
 

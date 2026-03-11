@@ -16,6 +16,9 @@ class ArchitectConfig:
     max_retries: int = 2
     timeout: int = 900
     auto_approve: bool = False
+    decomposition_strategy: str = "microservices"  # microservices | bounded_contexts | monolith
+    max_services: int = 5                          # bounded_contexts mode: maximum service count
+    min_entities_per_service: int = 6              # bounded_contexts mode: minimum entities to stay standalone
 
 
 @dataclass
@@ -23,10 +26,10 @@ class BuilderConfig:
     """Configuration for the builder phase."""
 
     max_concurrent: int = 3
-    timeout_per_builder: int = 1800
-    depth: str = "thorough"
+    timeout_per_builder: int = 18000
+    depth: str = "exhaustive"
     poll_interval_s: int = 30
-    stall_timeout_s: int = 600  # Kill builder if no file activity for 10 min
+    stall_timeout_s: int = 3600  # Kill builder if no file activity for 60 min
 
 
 @dataclass
@@ -182,4 +185,26 @@ def load_super_config(path: Path | str | None = None) -> SuperOrchestratorConfig
     if "persistence" not in raw or "enabled" not in raw.get("persistence", {}):
         _apply_depth_gates(cfg)
 
+    validate_architect_config(cfg.architect)
+
     return cfg
+
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+VALID_DECOMPOSITION_STRATEGIES = ("microservices", "bounded_contexts", "monolith")
+
+
+def validate_architect_config(config: ArchitectConfig) -> None:
+    """Validate architect config fields. Raises ValueError on invalid input."""
+    if config.decomposition_strategy not in VALID_DECOMPOSITION_STRATEGIES:
+        raise ValueError(
+            f"Invalid decomposition_strategy '{config.decomposition_strategy}'. "
+            f"Must be one of: {', '.join(VALID_DECOMPOSITION_STRATEGIES)}"
+        )
+    if config.max_services < 1:
+        raise ValueError("max_services must be >= 1")
+    if config.min_entities_per_service < 1:
+        raise ValueError("min_entities_per_service must be >= 1")
